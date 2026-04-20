@@ -23,8 +23,19 @@ class MyApp extends StatelessWidget {
   }
 }
 
-class StartPage extends StatelessWidget {
+class StartPage extends StatefulWidget {
   const StartPage({super.key});
+
+  @override
+  State<StartPage> createState() => _StartPageState();
+}
+
+class _StartPageState extends State<StartPage> {
+  @override
+  void initState() {
+    super.initState();
+    GitHubSongCatalog.load();
+  }
 
   @override
   Widget build(BuildContext context) {
