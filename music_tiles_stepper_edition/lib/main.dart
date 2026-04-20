@@ -190,7 +190,7 @@ class _MyHomePageState extends State<MyHomePage> {
         final Stopwatch parseWatch = Stopwatch()..start();
         parsedSong = MidiParser.parse(bytes);
         _logDebug(
-          'Parser bij openen klaar in ${parseWatch.elapsedMilliseconds}ms: notes=${parsedSong.notes.length}, durationMs=${(parsedSong.totalDurationMicros / 1000).round()}',
+          'Parser bij openen klaar in ${parseWatch.elapsedMilliseconds}ms: notes=${parsedSong.notes.length}, maxPolyphony=${parsedSong.maxSimultaneousNotes}, durationMs=${(parsedSong.totalDurationMicros / 1000).round()}',
         );
       } catch (error, stackTrace) {
         _logDebug(
@@ -208,7 +208,7 @@ class _MyHomePageState extends State<MyHomePage> {
         _hexDisplay = _formatHexDump(bytes);
         _statusMessage = parsedSong == null
             ? 'Bestand geladen: ${file.name} (parser fout)'
-            : 'Bestand geladen: ${file.name} (${parsedSong.notes.length} noten)';
+          : 'Bestand geladen: ${file.name} (${parsedSong.notes.length} noten, max ${parsedSong.maxSimultaneousNotes} tegelijk)';
       });
       _logDebug('Hexdump opgebouwd, chars=${_hexDisplay.length}');
     } catch (error) {
@@ -252,7 +252,7 @@ class _MyHomePageState extends State<MyHomePage> {
         final Stopwatch parseWatch = Stopwatch()..start();
         song = MidiParser.parse(bytes);
         _logDebug(
-          'Parser on-demand klaar in ${parseWatch.elapsedMilliseconds}ms: format=${song.format}, tracks=${song.trackCount}, tpqn=${song.ticksPerQuarterNote}, tempos=${song.tempoChangeCount}, rawNotes=${song.rawNoteCount}, playableNotes=${song.notes.length}, durationMs=${(song.totalDurationMicros / 1000).round()}',
+          'Parser on-demand klaar in ${parseWatch.elapsedMilliseconds}ms: format=${song.format}, tracks=${song.trackCount}, tpqn=${song.ticksPerQuarterNote}, tempos=${song.tempoChangeCount}, rawNotes=${song.rawNoteCount}, playableNotes=${song.notes.length}, maxPolyphony=${song.maxSimultaneousNotes}, durationMs=${(song.totalDurationMicros / 1000).round()}',
         );
         if (mounted) {
           setState(() {
@@ -445,170 +445,181 @@ class _MyHomePageState extends State<MyHomePage> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Card(
-              elevation: 0,
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _statusMessage,
-                      style: Theme.of(context).textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _soundFontReady
-                          ? 'Piano soundfont actief'
-                          : 'Soundfont nog aan het laden',
-                    ),
-                    const SizedBox(height: 6),
-                    Text('Debug regels: ${_debugLog.length}'),
-                    const SizedBox(height: 12),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: [
-                        FilledButton.icon(
-                          onPressed: _pickMidiFile,
-                          icon: const Icon(Icons.folder_open),
-                          label: const Text('MIDI openen'),
-                        ),
-                        FilledButton.tonalIcon(
-                          onPressed: _isPlaying ? _stopPlayback : _playSelectedMidi,
-                          icon: Icon(_isPlaying ? Icons.stop : Icons.play_arrow),
-                          label: Text(_isPlaying ? 'Stop' : 'Afspelen'),
-                        ),
-                        FilledButton.tonalIcon(
-                          onPressed: () {
-                            setState(() {
-                              _showDebugPanel = !_showDebugPanel;
-                            });
-                          },
-                          icon: Icon(_showDebugPanel ? Icons.bug_report : Icons.bug_report_outlined),
-                          label: Text(_showDebugPanel ? 'Debug verbergen' : 'Debug tonen'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _debugLog.isEmpty
-                              ? null
-                              : () {
-                                  Clipboard.setData(ClipboardData(text: _debugLog.join('\n')));
-                                  _logDebug('Debuglog gekopieerd naar klembord');
-                                },
-                          icon: const Icon(Icons.copy_all),
-                          label: const Text('Kopieer debuglog'),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: _debugLog.isEmpty
-                              ? null
-                              : () {
-                                  setState(() {
-                                    _debugLog.clear();
-                                  });
-                                  _logDebug('Debuglog gewist');
-                                },
-                          icon: const Icon(Icons.delete_sweep),
-                          label: const Text('Wis debuglog'),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.only(bottom: 16),
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Card(
+                elevation: 0,
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _statusMessage,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        _soundFontReady
+                            ? 'Piano soundfont actief'
+                            : 'Soundfont nog aan het laden',
+                      ),
+                      const SizedBox(height: 6),
+                      Text('Debug regels: ${_debugLog.length}'),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: _pickMidiFile,
+                            icon: const Icon(Icons.folder_open),
+                            label: const Text('MIDI openen'),
+                          ),
+                          FilledButton.tonalIcon(
+                            onPressed: _isPlaying ? _stopPlayback : _playSelectedMidi,
+                            icon: Icon(_isPlaying ? Icons.stop : Icons.play_arrow),
+                            label: Text(_isPlaying ? 'Stop' : 'Afspelen'),
+                          ),
+                          FilledButton.tonalIcon(
+                            onPressed: () {
+                              setState(() {
+                                _showDebugPanel = !_showDebugPanel;
+                              });
+                            },
+                            icon: Icon(_showDebugPanel ? Icons.bug_report : Icons.bug_report_outlined),
+                            label: Text(_showDebugPanel ? 'Debug verbergen' : 'Debug tonen'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _debugLog.isEmpty
+                                ? null
+                                : () {
+                                    Clipboard.setData(ClipboardData(text: _debugLog.join('\n')));
+                                    _logDebug('Debuglog gekopieerd naar klembord');
+                                  },
+                            icon: const Icon(Icons.copy_all),
+                            label: const Text('Kopieer debuglog'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _debugLog.isEmpty
+                                ? null
+                                : () {
+                                    setState(() {
+                                      _debugLog.clear();
+                                    });
+                                    _logDebug('Debuglog gewist');
+                                  },
+                            icon: const Icon(Icons.delete_sweep),
+                            label: const Text('Wis debuglog'),
+                          ),
+                        ],
+                      ),
+                      if (_selectedFileName != null) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          'Bestand: $_selectedFileName',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ],
-                    ),
-                    if (_selectedFileName != null) ...[
-                      const SizedBox(height: 12),
-                      Text(
-                        'Bestand: $_selectedFileName',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
                     ],
-                  ],
+                  ),
                 ),
               ),
             ),
-          ),
-          if (_showDebugPanel)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: SizedBox(
-                height: 180,
-                child: Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: _debugLog.isEmpty
-                        ? const Text('Nog geen debugregels')
-                        : SingleChildScrollView(
-                            child: SelectableText(
-                              _debugLog.join('\n'),
-                              style: const TextStyle(
-                                fontFamily: 'Courier',
-                                fontSize: 11,
-                                height: 1.3,
+            if (_showDebugPanel)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: SizedBox(
+                  height: 180,
+                  child: Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: _debugLog.isEmpty
+                          ? const Text('Nog geen debugregels')
+                          : SingleChildScrollView(
+                              child: SelectableText(
+                                _debugLog.join('\n'),
+                                style: const TextStyle(
+                                  fontFamily: 'Courier',
+                                  fontSize: 11,
+                                  height: 1.3,
+                                ),
                               ),
                             ),
-                          ),
-                  ),
-                ),
-              ),
-            ),
-          if (_parsedSong != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: SizedBox(
-                height: 240,
-                child: Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'MIDI Visualizer',
-                          style: Theme.of(context).textTheme.titleMedium,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Playhead: ${_playheadMillis.toStringAsFixed(0)} ms / ${(_parsedSong!.totalDurationMicros / 1000).round()} ms',
-                        ),
-                        const SizedBox(height: 10),
-                        Expanded(
-                          child: _MidiPianoRoll(
-                            song: _parsedSong!,
-                            playheadMillis: _playheadMillis,
-                          ),
-                        ),
-                      ],
                     ),
                   ),
                 ),
               ),
-            ),
-          Expanded(
-            child: _fileData == null
-                ? Center(
-                    child: Text(
-                      'Kies een .mid bestand om de raw data te zien en af te spelen',
-                      style: Theme.of(context).textTheme.titleMedium,
-                      textAlign: TextAlign.center,
-                    ),
-                  )
-                : SingleChildScrollView(
-                    padding: const EdgeInsets.all(16),
-                    child: SelectableText(
-                      _hexDisplay,
-                      style: const TextStyle(
-                        fontFamily: 'Courier',
-                        fontSize: 11,
-                        height: 1.35,
+            if (_parsedSong != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: SizedBox(
+                  height: 240,
+                  child: Card(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'MIDI Visualizer',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Playhead: ${_playheadMillis.toStringAsFixed(0)} ms / ${(_parsedSong!.totalDurationMicros / 1000).round()} ms',
+                          ),
+                          Text('Max tegelijk gespeelde noten: ${_parsedSong!.maxSimultaneousNotes}'),
+                          const SizedBox(height: 10),
+                          Expanded(
+                            child: _MidiPianoRoll(
+                              song: _parsedSong!,
+                              playheadMillis: _playheadMillis,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
-          ),
-        ],
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Card(
+                margin: EdgeInsets.zero,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: _fileData == null
+                      ? SizedBox(
+                          height: 160,
+                          child: Center(
+                            child: Text(
+                              'Kies een .mid bestand om de raw data te zien en af te spelen',
+                              style: Theme.of(context).textTheme.titleMedium,
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        )
+                      : SelectableText(
+                          _hexDisplay,
+                          style: const TextStyle(
+                            fontFamily: 'Courier',
+                            fontSize: 11,
+                            height: 1.35,
+                          ),
+                        ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -639,6 +650,7 @@ class ParsedMidiSong {
     required this.ticksPerQuarterNote,
     required this.tempoChangeCount,
     required this.rawNoteCount,
+    required this.maxSimultaneousNotes,
   });
 
   final List<MidiNoteEvent> notes;
@@ -648,6 +660,7 @@ class ParsedMidiSong {
   final int ticksPerQuarterNote;
   final int tempoChangeCount;
   final int rawNoteCount;
+  final int maxSimultaneousNotes;
 }
 
 class MidiParser {
@@ -799,6 +812,8 @@ class MidiParser {
       return a.note.compareTo(b.note);
     });
 
+    final int maxSimultaneousNotes = _calculateMaxSimultaneousNotes(notes);
+
     if (format == 0 && trackCount == 0) {
       throw FormatException('Geen tracks gevonden in MIDI-bestand.');
     }
@@ -811,7 +826,38 @@ class MidiParser {
       ticksPerQuarterNote: ticksPerQuarterNote,
       tempoChangeCount: tempoMap.length,
       rawNoteCount: rawNotes.length,
+      maxSimultaneousNotes: maxSimultaneousNotes,
     );
+  }
+
+  static int _calculateMaxSimultaneousNotes(List<MidiNoteEvent> notes) {
+    if (notes.isEmpty) {
+      return 0;
+    }
+
+    final List<_PolyphonyEdge> edges = <_PolyphonyEdge>[];
+    for (final MidiNoteEvent note in notes) {
+      edges.add(_PolyphonyEdge(note.startMicros, 1));
+      edges.add(_PolyphonyEdge(note.endMicros, -1));
+    }
+
+    edges.sort((_PolyphonyEdge a, _PolyphonyEdge b) {
+      final int timeCmp = a.timeMicros.compareTo(b.timeMicros);
+      if (timeCmp != 0) {
+        return timeCmp;
+      }
+      return a.delta.compareTo(b.delta);
+    });
+
+    int current = 0;
+    int max = 0;
+    for (final _PolyphonyEdge edge in edges) {
+      current += edge.delta;
+      if (current > max) {
+        max = current;
+      }
+    }
+    return max;
   }
 
   static void _openNote(
@@ -966,6 +1012,13 @@ class _RawNote {
   final int velocity;
   final int startTick;
   final int endTick;
+}
+
+class _PolyphonyEdge {
+  _PolyphonyEdge(this.timeMicros, this.delta);
+
+  final int timeMicros;
+  final int delta;
 }
 
 class _MidiPianoRoll extends StatelessWidget {
