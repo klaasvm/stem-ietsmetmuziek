@@ -36,6 +36,9 @@ dependencies:
   cupertino_icons: ^1.0.8
   file_picker: ^11.0.2
   flutter_midi: ^1.1.0
+  ota_update: ^7.0.2
+  package_info_plus: ^9.0.0
+  pub_semver: ^2.2.0
 
 dev_dependencies:
   flutter_test:
