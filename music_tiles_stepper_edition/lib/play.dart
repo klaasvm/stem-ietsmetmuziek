@@ -108,6 +108,107 @@ class GitHubSongCatalog {
   }
 }
 
+class GameDifficulty {
+  const GameDifficulty({
+    required this.level,
+    required this.name,
+    required this.syncOffsetMillis,
+    required this.previewAheadMillis,
+    required this.minGameplayGapMicros,
+    required this.startGroupWindowMicros,
+    required this.minDoubleGapMicros,
+    required this.allowDoubleTiles,
+    required this.badTapEndsGame,
+    required this.missEndsGame,
+    required this.borderTolerance,
+    required this.tapWindowEarlyMillis,
+    required this.tapWindowLateMillis,
+    required this.missAfterMillis,
+    required this.perfectWindowMillis,
+    required this.goodWindowMillis,
+  });
+
+  final int level;
+  final String name;
+  final double syncOffsetMillis;
+  final double previewAheadMillis;
+  final int minGameplayGapMicros;
+  final int startGroupWindowMicros;
+  final int minDoubleGapMicros;
+  final bool allowDoubleTiles;
+  final bool badTapEndsGame;
+  final bool missEndsGame;
+  final double borderTolerance;
+  final double tapWindowEarlyMillis;
+  final double tapWindowLateMillis;
+  final double missAfterMillis;
+  final double perfectWindowMillis;
+  final double goodWindowMillis;
+
+  static const GameDifficulty level1 = GameDifficulty(
+    level: 1,
+    name: 'Chill',
+    syncOffsetMillis: 55,
+    previewAheadMillis: 3300,
+    minGameplayGapMicros: 440000,
+    startGroupWindowMicros: 190000,
+    minDoubleGapMicros: 800000,
+    allowDoubleTiles: false,
+    badTapEndsGame: false,
+    missEndsGame: false,
+    borderTolerance: 62,
+    tapWindowEarlyMillis: 5600,
+    tapWindowLateMillis: 2200,
+    missAfterMillis: 2600,
+    perfectWindowMillis: 140,
+    goodWindowMillis: 260,
+  );
+
+  static const GameDifficulty level2 = GameDifficulty(
+    level: 2,
+    name: 'Normaal',
+    syncOffsetMillis: 48,
+    previewAheadMillis: 2600,
+    minGameplayGapMicros: 250000,
+    startGroupWindowMicros: 145000,
+    minDoubleGapMicros: 440000,
+    allowDoubleTiles: true,
+    badTapEndsGame: true,
+    missEndsGame: true,
+    borderTolerance: 46,
+    tapWindowEarlyMillis: 4000,
+    tapWindowLateMillis: 1300,
+    missAfterMillis: 1650,
+    perfectWindowMillis: 90,
+    goodWindowMillis: 165,
+  );
+
+  static const GameDifficulty level3 = GameDifficulty(
+    level: 3,
+    name: 'Hard',
+    syncOffsetMillis: 42,
+    previewAheadMillis: 2100,
+    minGameplayGapMicros: 110000,
+    startGroupWindowMicros: 100000,
+    minDoubleGapMicros: 240000,
+    allowDoubleTiles: true,
+    badTapEndsGame: true,
+    missEndsGame: true,
+    borderTolerance: 36,
+    tapWindowEarlyMillis: 2700,
+    tapWindowLateMillis: 700,
+    missAfterMillis: 900,
+    perfectWindowMillis: 40,
+    goodWindowMillis: 85,
+  );
+
+  static const List<GameDifficulty> all = <GameDifficulty>[
+    level1,
+    level2,
+    level3,
+  ];
+}
+
 class PlayPage extends StatefulWidget {
   const PlayPage({super.key});
 
@@ -125,12 +226,127 @@ class _PlayPageState extends State<PlayPage> {
     _songsFuture = GitHubSongCatalog.load();
   }
 
-  void _openGame(GitHubMidiSong song) {
+  void _openGame(GitHubMidiSong song, GameDifficulty difficulty) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => GamePage(song: song),
+        builder: (_) => GamePage(song: song, difficulty: difficulty),
       ),
     );
+  }
+
+  Future<void> _chooseLevelAndOpenGame(GitHubMidiSong song) async {
+    final GameDifficulty? selected = await showModalBottomSheet<GameDifficulty>(
+      context: context,
+      backgroundColor: const Color(0xFF0E1528),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(26)),
+      ),
+      builder: (BuildContext context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  song.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Kies je level',
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                ...GameDifficulty.all.map((GameDifficulty difficulty) {
+                  final String subtitle;
+                  if (difficulty.level == 1) {
+                    subtitle = 'Minder blokken en brede timing';
+                  } else if (difficulty.level == 2) {
+                    subtitle = 'Gebalanceerde speed en timing';
+                  } else {
+                    subtitle = 'Sneller, dichter en strakkere timing';
+                  }
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: FilledButton.tonal(
+                      onPressed: () => Navigator.of(context).pop(difficulty),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(54),
+                        backgroundColor: Colors.white.withValues(alpha: 0.10),
+                      ),
+                      child: Row(
+                        children: <Widget>[
+                          Container(
+                            width: 30,
+                            height: 30,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.16),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Center(
+                              child: Text(
+                                '${difficulty.level}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                Text(
+                                  'Level ${difficulty.level} - ${difficulty.name}',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  subtitle,
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Icon(Icons.chevron_right, color: Colors.white70),
+                        ],
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (selected == null || !mounted) {
+      return;
+    }
+
+    GitHubSongCatalog.loadSongBytes(song.path);
+    _openGame(song, selected);
   }
 
   @override
@@ -198,7 +414,7 @@ class _PlayPageState extends State<PlayPage> {
                         Text(
                           loading
                               ? 'Songs worden op de achtergrond geladen...'
-                              : 'Tik op een song om meteen te starten.',
+                              : 'Tik op een song en kies level 1, 2 of 3.',
                           style: const TextStyle(fontSize: 16, height: 1.4),
                         ),
                         if (error != null) ...<Widget>[
@@ -241,8 +457,7 @@ class _PlayPageState extends State<PlayPage> {
                         child: InkWell(
                           borderRadius: BorderRadius.circular(20),
                           onTap: () {
-                            GitHubSongCatalog.loadSongBytes(song.path);
-                            _openGame(song);
+                            _chooseLevelAndOpenGame(song);
                           },
                           child: Padding(
                             padding: const EdgeInsets.all(16),
@@ -312,9 +527,10 @@ class _PlayPageState extends State<PlayPage> {
 }
 
 class GamePage extends StatefulWidget {
-  const GamePage({super.key, required this.song});
+  const GamePage({super.key, required this.song, required this.difficulty});
 
   final GitHubMidiSong song;
+  final GameDifficulty difficulty;
 
   @override
   State<GamePage> createState() => _GamePageState();
@@ -322,18 +538,8 @@ class GamePage extends StatefulWidget {
 
 class _GamePageState extends State<GamePage> {
   static const String _soundFontAsset = 'assets/sf2/generaluser_gs_softsynth_v144.sf2';
-
-  static const double _previewAheadMillis = 2100;
-  static const double _tapWindowEarlyMillis = 3200;
-  static const double _tapWindowLateMillis = 900;
-  static const double _missAfterMillis = 1150;
   static const int _hiddenStartDelayMillis = 2000;
-  static const double _perfectWindowMillis = 55;
-  static const double _goodWindowMillis = 105;
-  static const double _okWindowMillis = 170;
-  static const int _minimumGameplayGapMicros = 140000;
-  static const int _startGroupWindowMicros = 120000;
-  static const int _minimumDoubleGapMicros = 280000;
+  static const int _gameLoopIntervalMillis = 4;
 
   final FlutterMidi _flutterMidi = FlutterMidi();
   final List<_ScheduledNoteOff> _scheduledNoteOffs = <_ScheduledNoteOff>[];
@@ -368,6 +574,7 @@ class _GamePageState extends State<GamePage> {
   double _boardWidth = 0;
   int _nextMissIndex = 0;
   int _remainingNotes = 0;
+  final Stopwatch _gameClock = Stopwatch();
 
   Timer? _ticker;
 
@@ -466,7 +673,7 @@ class _GamePageState extends State<GamePage> {
     List<dev.MidiNoteEvent> current = <dev.MidiNoteEvent>[];
     int? currentStart;
     for (final dev.MidiNoteEvent note in sorted) {
-      if (currentStart == null || note.startMicros - currentStart <= _startGroupWindowMicros) {
+      if (currentStart == null || note.startMicros - currentStart <= widget.difficulty.startGroupWindowMicros) {
         current.add(note);
         currentStart ??= note.startMicros;
       } else {
@@ -479,17 +686,20 @@ class _GamePageState extends State<GamePage> {
       groups.add(current);
     }
 
+    final int snapGridMicros = _estimateSnapGridMicros(groups);
+
     final List<_GameTileNote> result = <_GameTileNote>[];
-    int? lastAcceptedStart;
-    int? lastDoubleStart;
+    int? lastAcceptedRawStart;
+    int? lastDoubleRawStart;
     int? previousLeadLane;
     int id = 0;
 
     for (final List<dev.MidiNoteEvent> group in groups) {
-      final int start = group.first.startMicros;
-      if (lastAcceptedStart != null && start - lastAcceptedStart < _minimumGameplayGapMicros) {
+      final int rawStart = _weightedGroupStartMicros(group);
+      if (lastAcceptedRawStart != null && rawStart - lastAcceptedRawStart < widget.difficulty.minGameplayGapMicros) {
         continue;
       }
+      final int start = _snapMicros(rawStart, snapGridMicros);
 
       final Map<int, dev.MidiNoteEvent> strongestByPitch = <int, dev.MidiNoteEvent>{};
       for (final dev.MidiNoteEvent note in group) {
@@ -523,11 +733,12 @@ class _GamePageState extends State<GamePage> {
         ),
       );
 
-        final bool denseChord = pitchNotes.length >= 4;
-        final bool canAddDouble = pitchNotes.length >= 2 &&
-          (lastDoubleStart == null ||
-            start - lastDoubleStart >= _minimumDoubleGapMicros ||
-            denseChord);
+          final bool denseChord = pitchNotes.length >= 4;
+          final bool canAddDouble = widget.difficulty.allowDoubleTiles &&
+            pitchNotes.length >= 2 &&
+              (lastDoubleRawStart == null ||
+                rawStart - lastDoubleRawStart >= widget.difficulty.minDoubleGapMicros ||
+                denseChord);
       if (canAddDouble) {
         dev.MidiNoteEvent secondary = pitchNotes[1];
         int bestDistance = (secondary.note - primary.note).abs();
@@ -555,11 +766,11 @@ class _GamePageState extends State<GamePage> {
               endMicros: secondary.endMicros,
             ),
           );
-          lastDoubleStart = start;
+          lastDoubleRawStart = rawStart;
         }
       }
 
-      lastAcceptedStart = start;
+      lastAcceptedRawStart = rawStart;
     }
 
     result.sort(( _GameTileNote a, _GameTileNote b) {
@@ -571,6 +782,57 @@ class _GamePageState extends State<GamePage> {
     });
 
     return result;
+  }
+
+  int _weightedGroupStartMicros(List<dev.MidiNoteEvent> group) {
+    if (group.length == 1) {
+      return group.first.startMicros;
+    }
+
+    int weightedSum = 0;
+    int weightTotal = 0;
+    for (final dev.MidiNoteEvent note in group) {
+      final int weight = note.velocity.clamp(1, 127);
+      weightedSum += note.startMicros * weight;
+      weightTotal += weight;
+    }
+    if (weightTotal <= 0) {
+      return group.first.startMicros;
+    }
+    return (weightedSum / weightTotal).round();
+  }
+
+  int _estimateSnapGridMicros(List<List<dev.MidiNoteEvent>> groups) {
+    final List<int> gaps = <int>[];
+    int? previous;
+    for (final List<dev.MidiNoteEvent> group in groups) {
+      final int start = group.first.startMicros;
+      if (previous != null) {
+        final int gap = start - previous;
+        if (gap > 0) {
+          gaps.add(gap);
+        }
+      }
+      previous = start;
+    }
+
+    if (gaps.isEmpty) {
+      return 16000;
+    }
+
+    gaps.sort();
+    final int medianGap = gaps[gaps.length ~/ 2];
+    return (medianGap ~/ 4).clamp(8000, 30000);
+  }
+
+  int _snapMicros(int micros, int gridMicros) {
+    if (gridMicros <= 0) {
+      return micros;
+    }
+    final int remainder = micros % gridMicros;
+    final int lower = micros - remainder;
+    final int upper = lower + gridMicros;
+    return (micros - lower) <= (upper - micros) ? lower : upper;
   }
 
   void _startGameLoop() {
@@ -604,21 +866,23 @@ class _GamePageState extends State<GamePage> {
       _playheadMillis = -_hiddenStartDelayMillis.toDouble();
     });
 
-    _songStartMicros = DateTime.now().microsecondsSinceEpoch + (_hiddenStartDelayMillis * 1000);
+    _songStartMicros = _hiddenStartDelayMillis * 1000;
+    _gameClock
+      ..reset()
+      ..start();
     _audioCursor = 0;
     _scheduledNoteOffs.clear();
     _activeTrackNotes.clear();
     _nextMissIndex = 0;
     _remainingNotes = _notes.length;
 
-    _ticker = Timer.periodic(const Duration(milliseconds: 5), (Timer timer) {
+    _ticker = Timer.periodic(const Duration(milliseconds: _gameLoopIntervalMillis), (Timer timer) {
       if (!mounted || !_isPlaying || _gameOver || _songFinished) {
         timer.cancel();
         return;
       }
 
-      final int nowMicros = DateTime.now().microsecondsSinceEpoch;
-      final double elapsedMillis = (nowMicros - _songStartMicros) / 1000;
+      final double elapsedMillis = (_gameClock.elapsedMicroseconds - _songStartMicros) / 1000;
 
       if (elapsedMillis < 0) {
         setState(() {
@@ -642,9 +906,14 @@ class _GamePageState extends State<GamePage> {
         _isPlaying = false;
         _status = 'Klaar';
         _stopAllAudio();
+        _gameClock.stop();
         timer.cancel();
       }
     });
+  }
+
+  double _effectiveStartMillis(_GameTileNote note) {
+    return note.startMillis + widget.difficulty.syncOffsetMillis;
   }
 
   bool _processMisses(double elapsedMillis) {
@@ -656,12 +925,15 @@ class _GamePageState extends State<GamePage> {
         continue;
       }
 
-      if (elapsedMillis > note.startMillis + _missAfterMillis) {
+      final double effectiveStart = _effectiveStartMillis(note);
+      if (elapsedMillis > effectiveStart + widget.difficulty.missAfterMillis) {
         note.missed = true;
         _remainingNotes -= 1;
         _registerMiss('Miss');
-        _endGame('GAME OVER', 'Een blok verdween uit beeld');
-        return true;
+        if (widget.difficulty.missEndsGame) {
+          _endGame('GAME OVER', 'Een blok verdween uit beeld');
+          return true;
+        }
       }
 
       break;
@@ -733,6 +1005,7 @@ class _GamePageState extends State<GamePage> {
   void _stopGame({bool stopSound = true, bool keepOverlay = false}) {
     _ticker?.cancel();
     _ticker = null;
+    _gameClock.stop();
     if (stopSound) {
       _stopAllAudio();
     }
@@ -765,13 +1038,15 @@ class _GamePageState extends State<GamePage> {
   _GameTileNote? _findTappedNoteInLane(int lane) {
     final List<_GameTileNote> candidates = _notes
         .where(
-          (_GameTileNote note) =>
-              !note.hit &&
-              !note.missed &&
-              note.lane == lane &&
-              _playheadMillis >= note.startMillis - _tapWindowEarlyMillis &&
-              _playheadMillis <= note.startMillis + _tapWindowLateMillis &&
-              note.startMillis - _playheadMillis <= _previewAheadMillis,
+          (_GameTileNote note) {
+            if (note.hit || note.missed || note.lane != lane) {
+              return false;
+            }
+            final double effectiveStart = _effectiveStartMillis(note);
+            return _playheadMillis >= effectiveStart - widget.difficulty.tapWindowEarlyMillis &&
+                _playheadMillis <= effectiveStart + widget.difficulty.tapWindowLateMillis &&
+                effectiveStart - _playheadMillis <= widget.difficulty.previewAheadMillis;
+          },
         )
         .toList();
 
@@ -780,8 +1055,8 @@ class _GamePageState extends State<GamePage> {
     }
 
     candidates.sort(( _GameTileNote a, _GameTileNote b) {
-      final double da = (a.startMillis - _playheadMillis).abs();
-      final double db = (b.startMillis - _playheadMillis).abs();
+      final double da = (_effectiveStartMillis(a) - _playheadMillis).abs();
+      final double db = (_effectiveStartMillis(b) - _playheadMillis).abs();
       return da.compareTo(db);
     });
     return candidates.first;
@@ -792,7 +1067,7 @@ class _GamePageState extends State<GamePage> {
     _GameTileNote? best = _findTappedNoteInLane(lane);
 
     // When tapping close to lane borders, also accept the neighboring lane.
-    const double borderTolerance = 36;
+    final double borderTolerance = widget.difficulty.borderTolerance;
     final double laneWidth = _boardWidth > 0 ? _boardWidth / 4 : 0;
     if (laneWidth > 0) {
       final double laneLeft = lane * laneWidth;
@@ -815,8 +1090,8 @@ class _GamePageState extends State<GamePage> {
           best = candidate;
           continue;
         }
-        final double bestDelta = (best.startMillis - _playheadMillis).abs();
-        final double candidateDelta = (candidate.startMillis - _playheadMillis).abs();
+        final double bestDelta = (_effectiveStartMillis(best) - _playheadMillis).abs();
+        final double candidateDelta = (_effectiveStartMillis(candidate) - _playheadMillis).abs();
         if (candidateDelta < bestDelta) {
           best = candidate;
         }
@@ -834,7 +1109,9 @@ class _GamePageState extends State<GamePage> {
     final _GameTileNote? tapped = _findTappedNoteByPosition(event.localPosition.dx);
     if (tapped == null) {
       _registerJudgement('Bad Tap');
-      _endGame('GAME OVER', 'Je tikte naast een blok');
+      if (widget.difficulty.badTapEndsGame) {
+        _endGame('GAME OVER', 'Je tikte naast een blok');
+      }
       return;
     }
 
@@ -847,13 +1124,13 @@ class _GamePageState extends State<GamePage> {
       note.sounded = true;
       _remainingNotes -= 1;
 
-      final double diff = (_playheadMillis - note.startMillis).abs();
-      if (diff <= _perfectWindowMillis) {
+      final double diff = (_playheadMillis - _effectiveStartMillis(note)).abs();
+      if (diff <= widget.difficulty.perfectWindowMillis) {
         _perfectCount += 1;
         _combo += 1;
         _score += 300 + (_combo * 2);
         _registerJudgement('Perfect');
-      } else if (diff <= _goodWindowMillis) {
+      } else if (diff <= widget.difficulty.goodWindowMillis) {
         _goodCount += 1;
         _combo += 1;
         _score += 180 + _combo;
@@ -887,6 +1164,7 @@ class _GamePageState extends State<GamePage> {
 
     _ticker?.cancel();
     _ticker = null;
+    _gameClock.stop();
   }
 
   Color _laneAccent(int lane) {
@@ -963,7 +1241,7 @@ class _GamePageState extends State<GamePage> {
                               const SizedBox(width: 10),
                               Expanded(
                                 child: Text(
-                                  widget.song.name,
+                                  '${widget.song.name}  |  L${widget.difficulty.level}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -1239,13 +1517,14 @@ class _GamePageState extends State<GamePage> {
         continue;
       }
 
-      final double noteStartMillis = note.startMillis;
-      if (noteStartMillis - elapsedMillis > _previewAheadMillis || elapsedMillis - noteStartMillis > _missAfterMillis) {
+      final double effectiveStart = _effectiveStartMillis(note);
+      if (effectiveStart - elapsedMillis > widget.difficulty.previewAheadMillis ||
+          elapsedMillis - effectiveStart > widget.difficulty.missAfterMillis) {
         continue;
       }
 
-      final double timeToHit = noteStartMillis - elapsedMillis;
-      final double top = hitZoneY - (timeToHit / _previewAheadMillis) * travelDistance;
+      final double timeToHit = effectiveStart - elapsedMillis;
+      final double top = hitZoneY - (timeToHit / widget.difficulty.previewAheadMillis) * travelDistance;
       final double tileHeight = (height * 0.13).clamp(72.0, 120.0);
       final double left = note.lane * laneWidth + 2;
       final double width = laneWidth - 4;
