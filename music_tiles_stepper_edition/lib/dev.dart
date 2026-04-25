@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_midi/flutter_midi.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class DevPage extends StatefulWidget {
   const DevPage({super.key, required this.title});
@@ -44,13 +45,39 @@ class _DevPageState extends State<DevPage> {
   double _playheadMillis = 0;
   List<GitHubMidiSong> _githubSongs = <GitHubMidiSong>[];
   bool _githubSongsLoading = false;
+  String _appVersionLabel = 'Versie laden...';
 
   @override
   void initState() {
     super.initState();
     _logDebug('App gestart op ${Platform.operatingSystem}');
+    _loadAppVersion();
     _loadSoundFont();
     _loadGitHubSongCatalog();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final PackageInfo packageInfo = await PackageInfo.fromPlatform();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _appVersionLabel = packageInfo.buildNumber.isEmpty
+            ? packageInfo.version
+            : '${packageInfo.version}+${packageInfo.buildNumber}';
+      });
+      _logDebug('App versie geladen: $_appVersionLabel');
+    } catch (error, stackTrace) {
+      _logDebug('App versie laden mislukt', error: error, stackTrace: stackTrace);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _appVersionLabel = 'Onbekend';
+      });
+    }
   }
 
   @override
@@ -257,7 +284,7 @@ class _DevPageState extends State<DevPage> {
           child: ListView.separated(
             padding: const EdgeInsets.all(16),
             itemCount: _githubSongs.length + 1,
-            separatorBuilder: (_, __) => const Divider(height: 1),
+            separatorBuilder: (_, int separatorIndex) => const Divider(height: 1),
             itemBuilder: (BuildContext context, int index) {
               if (index == 0) {
                 return ListTile(
@@ -657,6 +684,8 @@ class _DevPageState extends State<DevPage> {
                       Text(
                         _soundFontReady ? 'Piano soundfont actief' : 'Soundfont nog aan het laden',
                       ),
+                      const SizedBox(height: 6),
+                      Text('App versie: $_appVersionLabel'),
                       const SizedBox(height: 6),
                       Text('Debug regels: ${_debugLog.length}'),
                       if (_selectedSourceLabel != null) ...[

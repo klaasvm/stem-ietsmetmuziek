@@ -41,7 +41,14 @@ class _StartPageState extends State<StartPage> {
   @override
   void initState() {
     super.initState();
-    GitHubSongCatalog.load();
+    () async {
+      try {
+        await GitHubSongCatalog.load();
+      } catch (error, stackTrace) {
+        debugPrint('GitHubSongCatalog prefetch mislukt: $error');
+        debugPrint(stackTrace.toString());
+      }
+    }();
     _checkForUpdate();
   }
 
@@ -56,6 +63,21 @@ class _StartPageState extends State<StartPage> {
         _requiredUpdate = updateInfo;
         _updateCheckDone = true;
       });
+    } on UpdateReleaseNotPublishedException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _requiredUpdate = null;
+        _updateCheckDone = true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Update beschikbaar (${error.currentVersion} -> ${error.latestVersion}), maar release staat nog niet op GitHub.',
+          ),
+        ),
+      );
     } catch (error) {
       if (!mounted) {
         return;

@@ -20,6 +20,21 @@ class AppUpdateInfo {
   final String assetName;
 }
 
+class UpdateReleaseNotPublishedException implements Exception {
+  const UpdateReleaseNotPublishedException({
+    required this.currentVersion,
+    required this.latestVersion,
+  });
+
+  final String currentVersion;
+  final String latestVersion;
+
+  @override
+  String toString() {
+    return 'Er is wel een nieuwere versie ($latestVersion), maar er staat nog geen GitHub release klaar.';
+  }
+}
+
 class AppUpdateService {
   static const String _owner = 'klaasvm';
   static const String _repo = 'stem-ietsmetmuziek';
@@ -55,10 +70,22 @@ class AppUpdateService {
     final String configuredAsset =
         _asString(remoteConfig['apkAssetName']) ?? _defaultApkName;
 
-    final String downloadUrl = await _resolveReleaseApkUrl(
-      releaseTag: configuredTag,
-      preferredAssetName: configuredAsset,
-    );
+    final String downloadUrl = (configuredTag != null && configuredTag.isNotEmpty)
+        ? _buildReleaseAssetUrl(
+            releaseTag: configuredTag,
+            assetName: configuredAsset,
+          )
+        : await _resolveReleaseApkUrl(
+            releaseTag: configuredTag,
+            preferredAssetName: configuredAsset,
+          );
+
+    if (downloadUrl.isEmpty) {
+      throw UpdateReleaseNotPublishedException(
+        currentVersion: currentVersion,
+        latestVersion: latestVersion,
+      );
+    }
 
     return AppUpdateInfo(
       currentVersion: currentVersion,
@@ -121,7 +148,7 @@ class AppUpdateService {
 
   Future<Map<String, dynamic>> _fetchRemoteVersionConfig() async {
     final Uri uri = Uri.parse(
-      'https://raw.githubusercontent.com/$_owner/$_repo/$_branch/$_versionJsonPath',
+      'https://raw.githubusercontent.com/$_owner/$_repo/refs/heads/$_branch/$_versionJsonPath',
     );
 
     final HttpClient client = HttpClient()
@@ -130,8 +157,9 @@ class AppUpdateService {
     final HttpClientResponse response = await request.close();
 
     if (response.statusCode != 200) {
+      final String responsePreview = await _readResponsePreview(response);
       throw HttpException(
-        'Kon version.json niet laden (status ${response.statusCode}).',
+        'Kon version.json niet laden. endpoint=$uri status=${response.statusCode} reason=${response.reasonPhrase} body=$responsePreview',
       );
     }
 
@@ -161,9 +189,19 @@ class AppUpdateService {
     );
     final HttpClientResponse response = await request.close();
 
+    // No published release yet on GitHub: treat as "no update available".
+    if (response.statusCode == 404) {
+      return '';
+    }
+
     if (response.statusCode != 200) {
+      final String responsePreview = await _readResponsePreview(response);
+      final String requestId =
+          response.headers.value('x-github-request-id') ?? '-';
+      final String rateLimitRemaining =
+          response.headers.value('x-ratelimit-remaining') ?? '-';
       throw HttpException(
-        'Kon GitHub release niet laden (status ${response.statusCode}).',
+        'Kon GitHub release niet laden. endpoint=$endpoint status=${response.statusCode} reason=${response.reasonPhrase} x-github-request-id=$requestId x-ratelimit-remaining=$rateLimitRemaining body=$responsePreview',
       );
     }
 
@@ -203,6 +241,15 @@ class AppUpdateService {
     );
   }
 
+  String _buildReleaseAssetUrl({
+    required String releaseTag,
+    required String assetName,
+  }) {
+    final String encodedTag = Uri.encodeComponent(releaseTag);
+    final String encodedAsset = Uri.encodeComponent(assetName);
+    return 'https://github.com/$_owner/$_repo/releases/download/$encodedTag/$encodedAsset';
+  }
+
   String _normalizeVersion(String value) {
     final String cleaned = value.trim();
     if (cleaned.isEmpty) {
@@ -229,5 +276,21 @@ class AppUpdateService {
     }
     final String trimmed = value.trim();
     return trimmed.isEmpty ? null : trimmed;
+  }
+
+  Future<String> _readResponsePreview(HttpClientResponse response) async {
+    try {
+      final String body = await response.transform(utf8.decoder).join();
+      final String compact = body.replaceAll(RegExp(r'\s+'), ' ').trim();
+      if (compact.isEmpty) {
+        return '<empty>';
+      }
+      const int maxLength = 240;
+      return compact.length <= maxLength
+          ? compact
+          : '${compact.substring(0, maxLength)}...';
+    } catch (_) {
+      return '<unreadable-body>';
+    }
   }
 }
