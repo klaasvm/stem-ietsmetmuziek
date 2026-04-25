@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="nl">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Stem Iets Met Muziek – Android download</title>
+        <style>
+            :root {
+                --bg-1: #0b1020;
+                --bg-2: #11162a;
+                --card: rgba(17, 24, 39, 0.78);
+                --card-border: rgba(148, 163, 184, 0.25);
+                --text: #e5e7eb;
+                --muted: #9ca3af;
+                --accent: #22c55e;
+                --accent-hover: #16a34a;
+                --accent-text: #052e16;
+                --error-bg: rgba(239, 68, 68, 0.12);
+                --error-border: rgba(252, 165, 165, 0.4);
+                --error-text: #fecaca;
+            }
+
+            @media (prefers-color-scheme: light) {
+                :root {
+                    --bg-1: #f1f5f9;
+                    --bg-2: #e2e8f0;
+                    --card: rgba(255, 255, 255, 0.9);
+                    --card-border: rgba(15, 23, 42, 0.12);
+                    --text: #0f172a;
+                    --muted: #475569;
+                    --accent: #22c55e;
+                    --accent-hover: #16a34a;
+                    --accent-text: #052e16;
+                    --error-bg: rgba(239, 68, 68, 0.1);
+                    --error-border: rgba(239, 68, 68, 0.2);
+                    --error-text: #7f1d1d;
+                }
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            html,
+            body {
+                margin: 0;
+                min-height: 100%;
+            }
+
+            body {
+                font-family:
+                    Inter,
+                    "Segoe UI",
+                    Roboto,
+                    Arial,
+                    sans-serif;
+                color: var(--text);
+                background:
+                    radial-gradient(circle at 20% 20%, #1e293b 0%, transparent 35%),
+                    radial-gradient(circle at 80% 0%, #0ea5e9 0%, transparent 25%),
+                    linear-gradient(160deg, var(--bg-1), var(--bg-2));
+                display: grid;
+                place-items: center;
+                padding: 24px;
+            }
+
+            .card {
+                width: min(94vw, 560px);
+                background: var(--card);
+                border: 1px solid var(--card-border);
+                border-radius: 18px;
+                padding: 22px;
+                box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+                backdrop-filter: blur(8px);
+            }
+
+            .top {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 10px;
+            }
+
+            .logo {
+                width: 42px;
+                height: 42px;
+                border-radius: 12px;
+                display: grid;
+                place-items: center;
+                font-size: 20px;
+                background: linear-gradient(135deg, #22c55e, #16a34a);
+                color: #052e16;
+                font-weight: 700;
+                flex-shrink: 0;
+            }
+
+            h1 {
+                margin: 0;
+                font-size: clamp(1.1rem, 2.4vw, 1.4rem);
+                line-height: 1.25;
+            }
+
+            .subtitle {
+                margin: 2px 0 0;
+                color: var(--muted);
+                font-size: 0.95rem;
+            }
+
+            .status {
+                margin-top: 14px;
+                margin-bottom: 14px;
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                border: 1px solid var(--card-border);
+                background: rgba(148, 163, 184, 0.08);
+                padding: 8px 10px;
+                border-radius: 999px;
+                font-size: 0.85rem;
+                color: var(--muted);
+            }
+
+            .dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: #94a3b8;
+            }
+
+            p {
+                margin: 0 0 12px;
+                line-height: 1.5;
+            }
+
+            .muted {
+                color: var(--muted);
+                font-size: 0.95rem;
+            }
+
+            .btn {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 8px;
+                margin-top: 4px;
+                padding: 12px 16px;
+                border-radius: 12px;
+                background: var(--accent);
+                color: var(--accent-text);
+                text-decoration: none;
+                font-weight: 700;
+                border: 0;
+                transition:
+                    transform 0.12s ease,
+                    background 0.2s ease;
+                box-shadow: 0 10px 20px rgba(34, 197, 94, 0.25);
+            }
+
+            .btn:hover {
+                background: var(--accent-hover);
+                transform: translateY(-1px);
+            }
+
+            .btn:active {
+                transform: translateY(0);
+            }
+
+            .error-box {
+                border: 1px solid var(--error-border);
+                background: var(--error-bg);
+                color: var(--error-text);
+                border-radius: 12px;
+                padding: 12px;
+            }
+
+            .loading {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                color: var(--muted);
+            }
+
+            .spinner {
+                width: 16px;
+                height: 16px;
+                border-radius: 50%;
+                border: 2px solid rgba(148, 163, 184, 0.3);
+                border-top-color: currentColor;
+                animation: spin 0.8s linear infinite;
+            }
+
+            @keyframes spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <main class="card">
+            <div class="top">
+                <div class="logo">🎵</div>
+                <div>
+                    <h1>Stem Iets Met Muziek</h1>
+                    <p class="subtitle">Android downloadpagina</p>
+                </div>
+            </div>
+
+            <div class="status">
+                <span class="dot"></span>
+                <span id="statusText">Controle bezig...</span>
+            </div>
+
+            <div id="content">
+                <p class="loading"><span class="spinner"></span>Even laden…</p>
+            </div>
+        </main>
+
+        <script>
+            const OWNER = "klaasvm";
+            const REPO = "stem-ietsmetmuziek";
+            const VERSION_URL =
+                "https://raw.githubusercontent.com/klaasvm/stem-ietsmetmuziek/refs/heads/main/version.json";
+
+            const content = document.getElementById("content");
+            const statusText = document.getElementById("statusText");
+            const ua = navigator.userAgent || "";
+            const isAndroid = /Android/i.test(ua);
+            const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+
+            function setHTML(html) {
+                content.innerHTML = html;
+            }
+
+            function setStatus(text, color = "#94a3b8") {
+                statusText.textContent = text;
+                document.querySelector(".dot").style.background = color;
+            }
+
+            if (!isMobile) {
+                document.body.innerHTML = "<p>Download op gsm.</p>";
+            } else if (!isAndroid) {
+                setStatus("Geen Android-toestel", "#f59e0b");
+                setHTML(`
+                    <p>Deze download is alleen beschikbaar voor Android.</p>
+                    <p class="muted">Open deze pagina op een Android-toestel.</p>
+                `);
+            } else {
+                setStatus("Android gedetecteerd", "#22c55e");
+                loadLatestRelease();
+            }
+
+            async function loadLatestRelease() {
+                try {
+                    const res = await fetch(VERSION_URL, { cache: "no-store" });
+                    if (!res.ok) throw new Error("version.json kon niet geladen worden.");
+                    const data = await res.json();
+
+                    const releaseTag = data.releaseTag;
+                    const apkAssetName = data.apkAssetName;
+                    const version = data.version;
+
+                    if (!releaseTag || !apkAssetName) {
+                        throw new Error("Ongeldige version.json: releaseTag/apkAssetName ontbreekt.");
+                    }
+
+                    const downloadUrl = `https://github.com/${OWNER}/${REPO}/releases/download/${encodeURIComponent(
+                        releaseTag
+                    )}/${encodeURIComponent(apkAssetName)}`;
+
+                    setHTML(`
+                        <p>Laatste versie: <strong>${escapeHtml(version || releaseTag)}</strong></p>
+                        <a class="btn" href="${downloadUrl}" download>⬇ Download APK</a>
+                        <p class="muted">Als de download niet start, tik opnieuw op de knop.</p>
+                    `);
+                } catch (err) {
+                    setStatus("Fout bij ophalen", "#ef4444");
+                    setHTML(`
+                        <div class="error-box">
+                            <p><strong>Kon de laatste versie niet ophalen.</strong></p>
+                            <p class="muted">${escapeHtml(err.message || "Onbekende fout")}</p>
+                        </div>
+                    `);
+                }
+            }
+
+            function escapeHtml(str) {
+                return String(str).replace(/[&<>"']/g, (m) => {
+                    const map = {
+                        "&": "&amp;",
+                        "<": "&lt;",
+                        ">": "&gt;",
+                        '"': "&quot;",
+                        "'": "&#039;",
+                    };
+                    return map[m];
+                });
+            }
+        </script>
+    </body>
+</html>
