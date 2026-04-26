@@ -11,6 +11,12 @@ except:
     import json
 
 UPLOAD_DIR = "uploads"
+CLIENT_TIMEOUT_SECONDS = 20
+ALLOWED_CLIENT_TYPES = ("mobile", "computer")
+CLIENT_SLOTS = {
+    "mobile": {"id": None, "last_seen": 0},
+    "computer": {"id": None, "last_seen": 0},
+}
 
 def log(message):
     try:
@@ -33,6 +39,48 @@ def get_status_text():
 def should_log_request(path):
     # /list and /confirm are polled frequently; skip noisy per-request logs.
     return path != "/list" and path != "/confirm"
+
+
+def _release_expired_slots():
+    now = time.time()
+    for slot_type in ALLOWED_CLIENT_TYPES:
+        slot = CLIENT_SLOTS[slot_type]
+        if slot["id"] is None:
+            continue
+        if now - slot["last_seen"] > CLIENT_TIMEOUT_SECONDS:
+            log("Client slot vrijgegeven (timeout): {} {}".format(slot_type, slot["id"]))
+            slot["id"] = None
+            slot["last_seen"] = 0
+
+
+def _register_client(headers, client_addr):
+    _release_expired_slots()
+
+    client_type = (headers.get("x-client-type", "") or "").strip().lower()
+    client_id = (headers.get("x-client-id", "") or "").strip()
+    if not client_id:
+        client_id = client_addr[0]
+
+    if client_type not in ALLOWED_CLIENT_TYPES:
+        return True, ""
+
+    slot = CLIENT_SLOTS[client_type]
+    now = time.time()
+
+    if slot["id"] is None:
+        slot["id"] = client_id
+        slot["last_seen"] = now
+        log("Client slot geclaimd: {} {}".format(client_type, client_id))
+        return True, ""
+
+    if slot["id"] == client_id:
+        slot["last_seen"] = now
+        return True, ""
+
+    return (
+        False,
+        "{} slot al in gebruik door {}".format(client_type, slot["id"]),
+    )
 
 def send_response(conn, body, content_type="text/plain; charset=utf-8", status_code=200, status_text="OK"):
     if isinstance(body, str):
@@ -135,6 +183,11 @@ def start_server(port=80):
                     value = line[sep + 1:].strip()
                     headers[key] = value
 
+            allowed, reason = _register_client(headers, client_addr)
+            if not allowed:
+                send_error(conn, 409, "Conflict", "Client geweigerd: {}".format(reason))
+                continue
+
             if path == "/confirm" and method == "GET":
                 send_response(conn, get_confirm_text())
                 continue
@@ -149,6 +202,42 @@ def start_server(port=80):
                     else:
                         k, v = pair, ""
                     params[k] = v.replace("%20", " ")
+
+            if path == "/playback_ready" and method == "GET":
+                state = music_player.playback_state()
+                payload = json.dumps(
+                    {
+                        "ready": state.get("pending", False),
+                        "playing": state.get("playing", False),
+                        "current": state.get("current"),
+                    }
+                )
+                send_response(conn, payload, content_type="application/json; charset=utf-8")
+                continue
+
+            if path == "/play_sync" and method == "GET":
+                delay_value = params.get("delay_ms", "0")
+                try:
+                    delay_ms = int(delay_value)
+                except ValueError:
+                    send_error(conn, 400, "Bad Request", "delay_ms moet een geheel getal zijn")
+                    continue
+
+                if delay_ms < 0:
+                    delay_ms = 0
+                if delay_ms > 10000:
+                    delay_ms = 10000
+
+                try:
+                    music_player.start_playback_async(delay_ms=delay_ms)
+                    send_response(
+                        conn,
+                        json.dumps({"scheduled": True, "delay_ms": delay_ms}),
+                        content_type="application/json; charset=utf-8",
+                    )
+                except Exception as exc:
+                    send_error(conn, 409, "Conflict", "Kon playback niet starten: {}".format(exc))
+                continue
 
             name = params.get("name", "")
             file_id = params.get("id", "")
@@ -291,12 +380,7 @@ def start_server(port=80):
             send_response(conn, "Upload saved: {}".format(filepath))
 
             if safe_name.lower().endswith(".txt"):
-                try:
-                    log("TXT upload ontvangen, playback start: {}".format(filepath))
-                    music_player.auto_play_incoming_txt(filepath)
-                    log("TXT playback afgerond: {}".format(filepath))
-                except Exception as exc:
-                    log("TXT playback mislukt: {}".format(exc))
+                log("TXT upload ontvangen en klaar voor sync playback: {}".format(filepath))
         except OSError as e:
             log("Socket fout: {}".format(e))
         finally:

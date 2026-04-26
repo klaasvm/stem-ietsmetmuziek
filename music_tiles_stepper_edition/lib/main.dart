@@ -48,6 +48,55 @@ class _StartPageState extends State<StartPage> {
   String _esp32RawData = '';
   String? _esp32Ip;
 
+  Future<void> _openPlayModeChooser() async {
+    final PlayIntent? intent = await showModalBottomSheet<PlayIntent>(
+      context: context,
+      showDragHandle: true,
+      builder: (BuildContext context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const Text(
+                  'Kies modus',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: () => Navigator.of(context).pop(PlayIntent.game),
+                  icon: const Icon(Icons.sports_esports),
+                  label: const Text('Game spelen'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(52),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.of(context).pop(PlayIntent.music),
+                  icon: const Icon(Icons.music_note),
+                  label: const Text('Alleen muziek afspelen'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(52),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (intent == null || !mounted) {
+      return;
+    }
+
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => PlayPage(intent: intent)));
+  }
+
   @override
   void initState() {
     super.initState();
@@ -688,15 +737,15 @@ class _StartPageState extends State<StartPage> {
                     ),
                     const SizedBox(height: 32),
                     FilledButton.icon(
-                      onPressed: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => const PlayPage(),
-                          ),
-                        );
-                      },
+                      onPressed: _esp32LookupSucceeded == true
+                          ? _openPlayModeChooser
+                          : null,
                       icon: const Icon(Icons.play_arrow),
-                      label: const Text('Play'),
+                      label: Text(
+                        _esp32LookupSucceeded == true
+                            ? 'Play'
+                            : 'Play (wacht op ESP32)',
+                      ),
                       style: FilledButton.styleFrom(
                         minimumSize: const Size.fromHeight(56),
                       ),

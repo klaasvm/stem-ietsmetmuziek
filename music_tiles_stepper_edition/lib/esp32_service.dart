@@ -23,6 +23,8 @@ class Esp32Service extends ChangeNotifier {
   Esp32Service._();
 
   static final Esp32Service instance = Esp32Service._();
+  static const String _clientType = 'mobile';
+  final String _clientId = 'mobile-${DateTime.now().millisecondsSinceEpoch}';
 
   bool _lookupRunning = true;
   bool? _lookupSucceeded;
@@ -130,6 +132,7 @@ class Esp32Service extends ChangeNotifier {
       final HttpClientRequest request = await client
           .postUrl(uri)
           .timeout(const Duration(seconds: 5));
+      _setClientHeaders(request);
       request.headers.contentType = ContentType.binary;
       request.headers.contentLength = data.length;
       request.add(data);
@@ -155,6 +158,76 @@ class Esp32Service extends ChangeNotifier {
     } finally {
       client.close(force: true);
     }
+  }
+
+  Future<bool> isPlaybackReady() async {
+    final String? foundIp = await waitForIp();
+    if (foundIp == null) {
+      return false;
+    }
+
+    final HttpClient client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 3);
+    try {
+      final HttpClientRequest request = await client
+          .getUrl(Uri.parse('http://$foundIp/playback_ready'))
+          .timeout(const Duration(seconds: 4));
+      _setClientHeaders(request);
+      final HttpClientResponse response = await request.close().timeout(
+        const Duration(seconds: 4),
+      );
+      final String body = await response.transform(utf8.decoder).join();
+      if (response.statusCode != 200) {
+        return false;
+      }
+
+      final dynamic decoded = jsonDecode(body);
+      if (decoded is! Map<String, dynamic>) {
+        return false;
+      }
+
+      return decoded['ready'] == true;
+    } catch (_) {
+      return false;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> startSynchronizedPlayback({int delayMs = 2000}) async {
+    final String? foundIp = await waitForIp();
+    if (foundIp == null) {
+      throw const HttpException('Geen ESP32 gevonden voor sync playback.');
+    }
+
+    final Uri uri = Uri.parse('http://$foundIp/play_sync').replace(
+      queryParameters: <String, String>{'delay_ms': delayMs.toString()},
+    );
+
+    final HttpClient client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 3);
+    try {
+      final HttpClientRequest request = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 4));
+      _setClientHeaders(request);
+      final HttpClientResponse response = await request.close().timeout(
+        const Duration(seconds: 4),
+      );
+      final String body = await response.transform(utf8.decoder).join();
+      if (response.statusCode != 200) {
+        throw HttpException(
+          'Sync playback mislukt (${response.statusCode}): $body',
+        );
+      }
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  void _setClientHeaders(HttpClientRequest request) {
+    request.headers.set('X-Client-Type', _clientType);
+    request.headers.set('X-Client-Id', _clientId);
   }
 
   Future<void> _runLookup() async {
@@ -385,6 +458,7 @@ class Esp32Service extends ChangeNotifier {
       final HttpClientRequest request = await client
           .getUrl(Uri.parse('http://$ip/confirm'))
           .timeout(const Duration(milliseconds: 1000));
+      _setClientHeaders(request);
       final HttpClientResponse response = await request.close().timeout(
         const Duration(milliseconds: 1100),
       );
@@ -415,6 +489,7 @@ class Esp32Service extends ChangeNotifier {
         final HttpClientRequest request = await client
             .getUrl(Uri.parse('http://$ip$endpoint'))
             .timeout(const Duration(milliseconds: 1000));
+        _setClientHeaders(request);
         final HttpClientResponse response = await request.close().timeout(
           const Duration(milliseconds: 1100),
         );

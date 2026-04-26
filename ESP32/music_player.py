@@ -1,6 +1,7 @@
 import re
 import time
 import math
+import _thread
 
 from machine import PWM, Pin
 
@@ -12,6 +13,9 @@ TICKS_PER_BEAT = 480
 STEPPER_ENABLED = False
 SIMULATION_TIME_SCALE = 1.0
 SIMULATION_LOG_WAITS = False
+
+_current_txt_path = None
+_is_playing = False
 
 _ROW_PATTERN = re.compile(r"\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\}")
 _LEN_PATTERN = re.compile(r"int\s+musicLen\s*=\s*(\d+)")
@@ -128,6 +132,18 @@ def _find_latest_txt():
     return "{}/{}".format(UPLOAD_DIR, latest_name)
 
 
+def has_pending_txt():
+    return _find_latest_txt() is not None
+
+
+def playback_state():
+    return {
+        "playing": _is_playing,
+        "pending": has_pending_txt(),
+        "current": _current_txt_path,
+    }
+
+
 def stop_all(outputs=None):
     own_outputs = outputs is None
     if own_outputs:
@@ -145,8 +161,12 @@ def stop_all(outputs=None):
 
 
 def play_file(path, delete_after=False):
+    global _is_playing, _current_txt_path
+
     log("Muziek laden: {}".format(path))
     log("Mode: {}".format("STEPPER" if STEPPER_ENABLED else "SIMULATIE"))
+    _current_txt_path = path
+    _is_playing = True
     outputs = _create_pwm_outputs()
     us_per_beat = INITIAL_US_PER_BEAT
     us_per_tick = us_per_beat // TICKS_PER_BEAT
@@ -223,6 +243,8 @@ def play_file(path, delete_after=False):
 
         log("Playback klaar")
     finally:
+        _is_playing = False
+        _current_txt_path = None
         for pwm in outputs:
             if pwm is not None:
                 pwm.deinit()
@@ -246,3 +268,29 @@ def auto_play_incoming_txt(path):
 
     play_file(path, delete_after=True)
     return True
+
+
+def start_playback_when_requested(delay_ms=0):
+    if _is_playing:
+        raise ValueError("Playback al bezig")
+
+    latest = _find_latest_txt()
+    if latest is None:
+        raise ValueError("Geen .txt bestanden gevonden in uploads")
+
+    if delay_ms > 0:
+        log("Playback gepland over {} ms".format(delay_ms))
+        time.sleep_ms(delay_ms)
+
+    play_file(latest, delete_after=True)
+    return latest
+
+
+def start_playback_async(delay_ms=0):
+    def _runner():
+        try:
+            start_playback_when_requested(delay_ms=delay_ms)
+        except Exception as exc:
+            log("Async playback fout: {}".format(exc))
+
+    _thread.start_new_thread(_runner, ())

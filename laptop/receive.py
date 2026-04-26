@@ -11,6 +11,8 @@ from urllib import error, parse, request
 DISCOVERY_TIMEOUT = 0.8
 TIME_PATTERN = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 MIDI_EXTENSIONS = (".mid", ".midi")
+CLIENT_TYPE = "computer"
+CLIENT_ID = "pc-{}".format(socket.gethostname())
 
 
 def log(message):
@@ -53,7 +55,10 @@ def is_private_ipv4(ip):
 
 
 def get_url_text(url, timeout=DISCOVERY_TIMEOUT):
-    with request.urlopen(url, timeout=timeout) as response:
+    req = request.Request(url)
+    req.add_header("X-Client-Type", CLIENT_TYPE)
+    req.add_header("X-Client-Id", CLIENT_ID)
+    with request.urlopen(req, timeout=timeout) as response:
         body = response.read().decode("utf-8", "ignore")
         return response.status, body
 
@@ -186,7 +191,10 @@ def discover_esp32_ip():
 
 
 def list_uploaded_files(ip):
-    with request.urlopen("http://{}/list".format(ip), timeout=8) as response:
+    req = request.Request("http://{}/list".format(ip))
+    req.add_header("X-Client-Type", CLIENT_TYPE)
+    req.add_header("X-Client-Id", CLIENT_ID)
+    with request.urlopen(req, timeout=8) as response:
         body = response.read().decode("utf-8", "ignore")
         if response.status != 200:
             raise RuntimeError("List failed: {} {}".format(response.status, body))
@@ -201,7 +209,10 @@ def download_uploaded_file_bytes(ip, file_name, file_id):
     query = parse.urlencode({"name": file_name, "id": file_id})
     url = "http://{}/download?{}".format(ip, query)
 
-    with request.urlopen(url, timeout=15) as response:
+    req = request.Request(url)
+    req.add_header("X-Client-Type", CLIENT_TYPE)
+    req.add_header("X-Client-Id", CLIENT_ID)
+    with request.urlopen(req, timeout=15) as response:
         if response.status != 200:
             raise RuntimeError("Download failed with status {}".format(response.status))
         return response.read()
@@ -211,7 +222,10 @@ def delete_uploaded_file(ip, file_name, file_id):
     query = parse.urlencode({"name": file_name, "id": file_id})
     url = "http://{}/delete?{}".format(ip, query)
 
-    with request.urlopen(url, timeout=8) as response:
+    req = request.Request(url)
+    req.add_header("X-Client-Type", CLIENT_TYPE)
+    req.add_header("X-Client-Id", CLIENT_ID)
+    with request.urlopen(req, timeout=8) as response:
         body = response.read().decode("utf-8", "ignore")
         if response.status != 200:
             raise RuntimeError("Delete failed with status {}: {}".format(response.status, body))
@@ -225,6 +239,8 @@ def upload_file_bytes(ip, file_name, file_id, data):
     req = request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/octet-stream")
     req.add_header("Content-Length", str(len(data)))
+    req.add_header("X-Client-Type", CLIENT_TYPE)
+    req.add_header("X-Client-Id", CLIENT_ID)
 
     with request.urlopen(req, timeout=15) as response:
         body = response.read().decode("utf-8", "ignore")

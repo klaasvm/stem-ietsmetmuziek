@@ -3,11 +3,16 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_midi/flutter_midi.dart';
 
 import 'dev.dart' as dev;
+import 'esp32_service.dart';
+import 'polyphony_limit_page.dart';
+
+enum PlayIntent { game, music }
 
 class GitHubMidiSong {
   GitHubMidiSong({required this.name, required this.path});
@@ -25,7 +30,8 @@ class GitHubSongCatalog {
   static const String _githubMusicFolder = 'music';
 
   static Future<List<GitHubMidiSong>>? _cachedFuture;
-  static final Map<String, Future<Uint8List>> _cachedSongBytes = <String, Future<Uint8List>>{};
+  static final Map<String, Future<Uint8List>> _cachedSongBytes =
+      <String, Future<Uint8List>>{};
 
   static Future<List<GitHubMidiSong>> load() {
     return _cachedFuture ??= _loadInternal();
@@ -61,7 +67,8 @@ class GitHubSongCatalog {
     }
 
     final List<GitHubMidiSong> songs = <GitHubMidiSong>[];
-    final List<dynamic> treeEntries = decoded['tree'] as List<dynamic>? ?? <dynamic>[];
+    final List<dynamic> treeEntries =
+        decoded['tree'] as List<dynamic>? ?? <dynamic>[];
     for (final dynamic entry in treeEntries) {
       if (entry is! Map<String, dynamic>) {
         continue;
@@ -75,24 +82,24 @@ class GitHubSongCatalog {
       if (!path.startsWith('$_githubMusicFolder/')) {
         continue;
       }
-      if (!path.toLowerCase().endsWith('.mid') && !path.toLowerCase().endsWith('.midi')) {
+      if (!path.toLowerCase().endsWith('.mid') &&
+          !path.toLowerCase().endsWith('.midi')) {
         continue;
       }
 
-      songs.add(
-        GitHubMidiSong(
-          name: path.split('/').last,
-          path: path,
-        ),
-      );
+      songs.add(GitHubMidiSong(name: path.split('/').last, path: path));
     }
 
-    songs.sort((GitHubMidiSong a, GitHubMidiSong b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    songs.sort(
+      (GitHubMidiSong a, GitHubMidiSong b) =>
+          a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
     return songs;
   }
 
   static Future<Uint8List> _downloadSongBytes(String path) async {
-    final String rawUrl = 'https://raw.githubusercontent.com/$_githubOwner/$_githubRepo/$_githubBranch/$path';
+    final String rawUrl =
+        'https://raw.githubusercontent.com/$_githubOwner/$_githubRepo/$_githubBranch/$path';
     final HttpClient client = HttpClient();
     client.userAgent = 'music_tiles_stepper_edition';
     final HttpClientRequest request = await client.getUrl(Uri.parse(rawUrl));
@@ -101,10 +108,15 @@ class GitHubSongCatalog {
       throw HttpException('GitHub raw download status ${response.statusCode}');
     }
 
-    return response.fold<BytesBuilder>(BytesBuilder(), (BytesBuilder builder, List<int> chunk) {
-      builder.add(chunk);
-      return builder;
-    }).then((BytesBuilder builder) => builder.takeBytes());
+    return response
+        .fold<BytesBuilder>(BytesBuilder(), (
+          BytesBuilder builder,
+          List<int> chunk,
+        ) {
+          builder.add(chunk);
+          return builder;
+        })
+        .then((BytesBuilder builder) => builder.takeBytes());
   }
 }
 
@@ -210,7 +222,9 @@ class GameDifficulty {
 }
 
 class PlayPage extends StatefulWidget {
-  const PlayPage({super.key});
+  const PlayPage({super.key, required this.intent});
+
+  final PlayIntent intent;
 
   @override
   State<PlayPage> createState() => _PlayPageState();
@@ -218,7 +232,9 @@ class PlayPage extends StatefulWidget {
 
 class _PlayPageState extends State<PlayPage> {
   late Future<List<GitHubMidiSong>> _songsFuture;
+  final Esp32Service _esp32Service = Esp32Service.instance;
   bool _prefetchStarted = false;
+  bool _busy = false;
 
   @override
   void initState() {
@@ -226,15 +242,39 @@ class _PlayPageState extends State<PlayPage> {
     _songsFuture = GitHubSongCatalog.load();
   }
 
-  void _openGame(GitHubMidiSong song, GameDifficulty difficulty) {
+  String get _intentLabel {
+    return widget.intent == PlayIntent.game ? 'Game' : 'Muziek';
+  }
+
+  String get _intentDescription {
+    return widget.intent == PlayIntent.game
+        ? 'Kies een song, upload naar ESP32 en start daarna de game.'
+        : 'Kies een song of upload je eigen MIDI om gesynchroniseerd op ESP32 af te spelen.';
+  }
+
+  void _openGame({
+    required GitHubMidiSong song,
+    required GameDifficulty difficulty,
+    required Uint8List sourceBytes,
+    required String sourceName,
+  }) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => GamePage(song: song, difficulty: difficulty),
+        builder: (_) => GamePage(
+          song: song,
+          difficulty: difficulty,
+          sourceBytes: sourceBytes,
+          sourceName: sourceName,
+        ),
       ),
     );
   }
 
-  Future<void> _chooseLevelAndOpenGame(GitHubMidiSong song) async {
+  Future<void> _chooseLevelAndOpenGame({
+    required GitHubMidiSong song,
+    required Uint8List sourceBytes,
+    required String sourceName,
+  }) async {
     final GameDifficulty? selected = await showModalBottomSheet<GameDifficulty>(
       context: context,
       backgroundColor: const Color(0xFF0E1528),
@@ -262,10 +302,7 @@ class _PlayPageState extends State<PlayPage> {
                 const SizedBox(height: 8),
                 const Text(
                   'Kies je level',
-                  style: TextStyle(
-                    color: Colors.white70,
-                    fontSize: 14,
-                  ),
+                  style: TextStyle(color: Colors.white70, fontSize: 14),
                 ),
                 const SizedBox(height: 14),
                 ...GameDifficulty.all.map((GameDifficulty difficulty) {
@@ -328,7 +365,10 @@ class _PlayPageState extends State<PlayPage> {
                               ],
                             ),
                           ),
-                          const Icon(Icons.chevron_right, color: Colors.white70),
+                          const Icon(
+                            Icons.chevron_right,
+                            color: Colors.white70,
+                          ),
                         ],
                       ),
                     ),
@@ -345,16 +385,154 @@ class _PlayPageState extends State<PlayPage> {
       return;
     }
 
-    GitHubSongCatalog.loadSongBytes(song.path);
-    _openGame(song, selected);
+    _openGame(
+      song: song,
+      difficulty: selected,
+      sourceBytes: sourceBytes,
+      sourceName: sourceName,
+    );
+  }
+
+  Future<void> _pickLocalMidiAndHandle() async {
+    final FilePickerResult? result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: <String>['mid', 'midi'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) {
+      return;
+    }
+
+    final PlatformFile file = result.files.first;
+    Uint8List? bytes = file.bytes;
+    if (bytes == null && file.path != null) {
+      bytes = await File(file.path!).readAsBytes();
+    }
+
+    if (bytes == null || bytes.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kon lokaal MIDI-bestand niet lezen.')),
+      );
+      return;
+    }
+
+    final String fileName = file.name.isEmpty ? 'upload.mid' : file.name;
+    await _handleMidiSelection(
+      bytes: bytes,
+      fileName: fileName,
+      song: GitHubMidiSong(name: fileName, path: 'local/$fileName'),
+    );
+  }
+
+  Future<void> _handleGitHubSongTap(GitHubMidiSong song) async {
+    final Uint8List bytes = await GitHubSongCatalog.loadSongBytes(song.path);
+    await _handleMidiSelection(bytes: bytes, fileName: song.name, song: song);
+  }
+
+  Future<void> _handleMidiSelection({
+    required Uint8List bytes,
+    required String fileName,
+    required GitHubMidiSong song,
+  }) async {
+    if (_busy) {
+      return;
+    }
+
+    setState(() {
+      _busy = true;
+    });
+
+    try {
+      final dev.ParsedMidiSong parsed = dev.MidiParser.parse(bytes);
+      if (parsed.maxSimultaneousNotes > 5) {
+        if (!mounted) {
+          return;
+        }
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => PolyphonyLimitPage(
+              fileName: fileName,
+              maxSimultaneousNotes: parsed.maxSimultaneousNotes,
+            ),
+          ),
+        );
+        return;
+      }
+
+      await _esp32Service.uploadFile(data: bytes, fileName: fileName);
+
+      if (widget.intent == PlayIntent.music) {
+        await _startMusicModePlayback();
+        return;
+      }
+
+      await _chooseLevelAndOpenGame(
+        song: song,
+        sourceBytes: bytes,
+        sourceName: fileName,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('MIDI verwerken mislukt: $error')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _startMusicModePlayback() async {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Wachten tot PC-conversie klaar is...')),
+    );
+
+    bool ready = false;
+    for (int i = 0; i < 20; i++) {
+      ready = await _esp32Service.isPlaybackReady();
+      if (ready) {
+        break;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+
+    if (!ready) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('ESP32 is nog niet klaar met de TXT-song.'),
+        ),
+      );
+      return;
+    }
+
+    await _esp32Service.startSynchronizedPlayback(delayMs: 2000);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Sync playback gestart op ESP32.')),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Play'),
-      ),
+      appBar: AppBar(title: const Text('Play')),
       body: Container(
         width: double.infinity,
         decoration: const BoxDecoration(
@@ -371,154 +549,178 @@ class _PlayPageState extends State<PlayPage> {
         child: SafeArea(
           child: FutureBuilder<List<GitHubMidiSong>>(
             future: _songsFuture,
-            builder: (BuildContext context, AsyncSnapshot<List<GitHubMidiSong>> snapshot) {
-              final bool loading = snapshot.connectionState == ConnectionState.waiting;
-              final Object? error = snapshot.error;
-              final List<GitHubMidiSong> songs = snapshot.data ?? <GitHubMidiSong>[];
+            builder:
+                (
+                  BuildContext context,
+                  AsyncSnapshot<List<GitHubMidiSong>> snapshot,
+                ) {
+                  final bool loading =
+                      snapshot.connectionState == ConnectionState.waiting;
+                  final Object? error = snapshot.error;
+                  final List<GitHubMidiSong> songs =
+                      snapshot.data ?? <GitHubMidiSong>[];
 
-              return ListView(
-                padding: const EdgeInsets.all(16),
-                children: <Widget>[
-                  Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(28),
-                      boxShadow: const <BoxShadow>[
-                        BoxShadow(
-                          color: Color(0x22000000),
-                          blurRadius: 24,
-                          offset: Offset(0, 12),
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        const Row(
-                          children: <Widget>[
-                            Icon(Icons.queue_music_rounded, size: 32),
-                            SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                'Kies een song',
-                                style: TextStyle(
-                                  fontSize: 28,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
+                  return ListView(
+                    padding: const EdgeInsets.all(16),
+                    children: <Widget>[
+                      Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(28),
+                          boxShadow: const <BoxShadow>[
+                            BoxShadow(
+                              color: Color(0x22000000),
+                              blurRadius: 24,
+                              offset: Offset(0, 12),
                             ),
                           ],
                         ),
-                        const SizedBox(height: 10),
-                        Text(
-                          loading
-                              ? 'Songs worden op de achtergrond geladen...'
-                              : 'Tik op een song en kies level 1, 2 of 3.',
-                          style: const TextStyle(fontSize: 16, height: 1.4),
-                        ),
-                        if (error != null) ...<Widget>[
-                          const SizedBox(height: 8),
-                          Text(
-                            'GitHub laden mislukt: $error',
-                            style: const TextStyle(color: Colors.redAccent),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  if (loading)
-                    const LinearProgressIndicator(),
-                  if (!loading && songs.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 16),
-                      child: Text(
-                        'Geen songs gevonden in de GitHub-map music/.',
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  if (!loading && songs.isNotEmpty && !_prefetchStarted)
-                    Builder(
-                      builder: (BuildContext context) {
-                        _prefetchStarted = true;
-                        GitHubSongCatalog.prefetchSongs(songs.take(5));
-                        return const SizedBox.shrink();
-                      },
-                    ),
-                  const SizedBox(height: 16),
-                  ...songs.map(
-                    (GitHubMidiSong song) => Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Material(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(20),
-                        elevation: 2,
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(20),
-                          onTap: () {
-                            _chooseLevelAndOpenGame(song);
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Row(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            const Row(
                               children: <Widget>[
-                                Container(
-                                  width: 48,
-                                  height: 48,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF111827),
-                                    borderRadius: BorderRadius.circular(14),
-                                  ),
-                                  child: const Icon(
-                                    Icons.music_note,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                const SizedBox(width: 14),
+                                Icon(Icons.queue_music_rounded, size: 32),
+                                SizedBox(width: 12),
                                 Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: <Widget>[
-                                      Text(
-                                        song.name,
-                                        style: const TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 4),
-                                      Text(
-                                        song.path,
-                                        style: TextStyle(
-                                          color: Colors.grey.shade700,
-                                        ),
-                                      ),
-                                    ],
+                                  child: Text(
+                                    'Kies een song',
+                                    style: TextStyle(
+                                      fontSize: 28,
+                                      fontWeight: FontWeight.w800,
+                                    ),
                                   ),
                                 ),
-                                const Icon(Icons.chevron_right),
                               ],
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              loading
+                                  ? 'Songs worden op de achtergrond geladen...'
+                                  : _intentDescription,
+                              style: const TextStyle(fontSize: 16, height: 1.4),
+                            ),
+                            const SizedBox(height: 12),
+                            FilledButton.tonalIcon(
+                              onPressed: _busy ? null : _pickLocalMidiAndHandle,
+                              icon: const Icon(Icons.upload_file),
+                              label: Text(
+                                _busy ? 'Bezig...' : 'Upload eigen MIDI',
+                              ),
+                            ),
+                            if (error != null) ...<Widget>[
+                              const SizedBox(height: 8),
+                              Text(
+                                'GitHub laden mislukt: $error',
+                                style: const TextStyle(color: Colors.redAccent),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      if (loading) const LinearProgressIndicator(),
+                      if (!loading && songs.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 16),
+                          child: Text(
+                            'Geen songs gevonden in de GitHub-map music/.',
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      if (!loading && songs.isNotEmpty && !_prefetchStarted)
+                        Builder(
+                          builder: (BuildContext context) {
+                            _prefetchStarted = true;
+                            GitHubSongCatalog.prefetchSongs(songs.take(5));
+                            return const SizedBox.shrink();
+                          },
+                        ),
+                      const SizedBox(height: 16),
+                      ...songs.map(
+                        (GitHubMidiSong song) => Padding(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          child: Material(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(20),
+                            elevation: 2,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(20),
+                              onTap: () {
+                                _handleGitHubSongTap(song);
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.all(16),
+                                child: Row(
+                                  children: <Widget>[
+                                    Container(
+                                      width: 48,
+                                      height: 48,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF111827),
+                                        borderRadius: BorderRadius.circular(14),
+                                      ),
+                                      child: const Icon(
+                                        Icons.music_note,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 14),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: <Widget>[
+                                          Text(
+                                            song.name,
+                                            style: const TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(
+                                            song.path,
+                                            style: TextStyle(
+                                              color: Colors.grey.shade700,
+                                            ),
+                                          ),
+                                          if (widget.intent == PlayIntent.game)
+                                            const Text(
+                                              'Game modus',
+                                              style: TextStyle(fontSize: 12),
+                                            )
+                                          else
+                                            const Text(
+                                              'Muziek modus',
+                                              style: TextStyle(fontSize: 12),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    const Icon(Icons.chevron_right),
+                                  ],
+                                ),
+                              ),
                             ),
                           ),
                         ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: () {
-                      Navigator.of(context).pop();
-                    },
-                    icon: const Icon(Icons.arrow_back),
-                    label: const Text('Terug'),
-                    style: FilledButton.styleFrom(
-                      minimumSize: const Size.fromHeight(56),
-                    ),
-                  ),
-                ],
-              );
-            },
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                        },
+                        icon: const Icon(Icons.arrow_back),
+                        label: Text('Terug ($_intentLabel)'),
+                        style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(56),
+                        ),
+                      ),
+                    ],
+                  );
+                },
           ),
         ),
       ),
@@ -527,21 +729,31 @@ class _PlayPageState extends State<PlayPage> {
 }
 
 class GamePage extends StatefulWidget {
-  const GamePage({super.key, required this.song, required this.difficulty});
+  const GamePage({
+    super.key,
+    required this.song,
+    required this.difficulty,
+    required this.sourceBytes,
+    required this.sourceName,
+  });
 
   final GitHubMidiSong song;
   final GameDifficulty difficulty;
+  final Uint8List sourceBytes;
+  final String sourceName;
 
   @override
   State<GamePage> createState() => _GamePageState();
 }
 
 class _GamePageState extends State<GamePage> {
-  static const String _soundFontAsset = 'assets/sf2/generaluser_gs_softsynth_v144.sf2';
+  static const String _soundFontAsset =
+      'assets/sf2/generaluser_gs_softsynth_v144.sf2';
   static const int _hiddenStartDelayMillis = 2000;
   static const int _gameLoopIntervalMillis = 4;
 
   final FlutterMidi _flutterMidi = FlutterMidi();
+  final Esp32Service _esp32Service = Esp32Service.instance;
   final List<_ScheduledNoteOff> _scheduledNoteOffs = <_ScheduledNoteOff>[];
   final Set<int> _activeTrackNotes = <int>{};
   final List<_GameTileNote> _notes = <_GameTileNote>[];
@@ -592,11 +804,8 @@ class _GamePageState extends State<GamePage> {
 
   Future<void> _initGame() async {
     try {
-      final List<dynamic> loaded = await Future.wait<dynamic>(<Future<dynamic>>[
-        _loadSoundFont(),
-        GitHubSongCatalog.loadSongBytes(widget.song.path),
-      ]);
-      final Uint8List bytes = loaded[1] as Uint8List;
+      await _loadSoundFont();
+      final Uint8List bytes = widget.sourceBytes;
       final dev.ParsedMidiSong parsedSong = dev.MidiParser.parse(bytes);
       if (!mounted) {
         return;
@@ -637,14 +846,15 @@ class _GamePageState extends State<GamePage> {
   }
 
   List<_GameTileNote> _buildGameNotes(dev.ParsedMidiSong song) {
-    final List<dev.MidiNoteEvent> sorted = List<dev.MidiNoteEvent>.from(song.notes)
-      ..sort((dev.MidiNoteEvent a, dev.MidiNoteEvent b) {
-        final int byStart = a.startMicros.compareTo(b.startMicros);
-        if (byStart != 0) {
-          return byStart;
-        }
-        return b.velocity.compareTo(a.velocity);
-      });
+    final List<dev.MidiNoteEvent> sorted =
+        List<dev.MidiNoteEvent>.from(song.notes)
+          ..sort((dev.MidiNoteEvent a, dev.MidiNoteEvent b) {
+            final int byStart = a.startMicros.compareTo(b.startMicros);
+            if (byStart != 0) {
+              return byStart;
+            }
+            return b.velocity.compareTo(a.velocity);
+          });
 
     if (sorted.isEmpty) {
       return <_GameTileNote>[];
@@ -673,7 +883,9 @@ class _GamePageState extends State<GamePage> {
     List<dev.MidiNoteEvent> current = <dev.MidiNoteEvent>[];
     int? currentStart;
     for (final dev.MidiNoteEvent note in sorted) {
-      if (currentStart == null || note.startMicros - currentStart <= widget.difficulty.startGroupWindowMicros) {
+      if (currentStart == null ||
+          note.startMicros - currentStart <=
+              widget.difficulty.startGroupWindowMicros) {
         current.add(note);
         currentStart ??= note.startMicros;
       } else {
@@ -696,12 +908,15 @@ class _GamePageState extends State<GamePage> {
 
     for (final List<dev.MidiNoteEvent> group in groups) {
       final int rawStart = _weightedGroupStartMicros(group);
-      if (lastAcceptedRawStart != null && rawStart - lastAcceptedRawStart < widget.difficulty.minGameplayGapMicros) {
+      if (lastAcceptedRawStart != null &&
+          rawStart - lastAcceptedRawStart <
+              widget.difficulty.minGameplayGapMicros) {
         continue;
       }
       final int start = _snapMicros(rawStart, snapGridMicros);
 
-      final Map<int, dev.MidiNoteEvent> strongestByPitch = <int, dev.MidiNoteEvent>{};
+      final Map<int, dev.MidiNoteEvent> strongestByPitch =
+          <int, dev.MidiNoteEvent>{};
       for (final dev.MidiNoteEvent note in group) {
         final dev.MidiNoteEvent? existing = strongestByPitch[note.note];
         if (existing == null || note.velocity > existing.velocity) {
@@ -709,8 +924,11 @@ class _GamePageState extends State<GamePage> {
         }
       }
 
-      final List<dev.MidiNoteEvent> pitchNotes = strongestByPitch.values.toList()
-        ..sort((dev.MidiNoteEvent a, dev.MidiNoteEvent b) => b.velocity.compareTo(a.velocity));
+      final List<dev.MidiNoteEvent> pitchNotes =
+          strongestByPitch.values.toList()..sort(
+            (dev.MidiNoteEvent a, dev.MidiNoteEvent b) =>
+                b.velocity.compareTo(a.velocity),
+          );
       if (pitchNotes.isEmpty) {
         continue;
       }
@@ -733,12 +951,14 @@ class _GamePageState extends State<GamePage> {
         ),
       );
 
-          final bool denseChord = pitchNotes.length >= 4;
-          final bool canAddDouble = widget.difficulty.allowDoubleTiles &&
-            pitchNotes.length >= 2 &&
-              (lastDoubleRawStart == null ||
-                rawStart - lastDoubleRawStart >= widget.difficulty.minDoubleGapMicros ||
-                denseChord);
+      final bool denseChord = pitchNotes.length >= 4;
+      final bool canAddDouble =
+          widget.difficulty.allowDoubleTiles &&
+          pitchNotes.length >= 2 &&
+          (lastDoubleRawStart == null ||
+              rawStart - lastDoubleRawStart >=
+                  widget.difficulty.minDoubleGapMicros ||
+              denseChord);
       if (canAddDouble) {
         dev.MidiNoteEvent secondary = pitchNotes[1];
         int bestDistance = (secondary.note - primary.note).abs();
@@ -773,7 +993,7 @@ class _GamePageState extends State<GamePage> {
       lastAcceptedRawStart = rawStart;
     }
 
-    result.sort(( _GameTileNote a, _GameTileNote b) {
+    result.sort((_GameTileNote a, _GameTileNote b) {
       final int byStart = a.startMicros.compareTo(b.startMicros);
       if (byStart != 0) {
         return byStart;
@@ -835,10 +1055,39 @@ class _GamePageState extends State<GamePage> {
     return (micros - lower) <= (upper - micros) ? lower : upper;
   }
 
-  void _startGameLoop() {
+  Future<void> _startGameLoop() async {
     if (!_soundFontReady || _parsedSong == null || _notes.isEmpty) {
       return;
     }
+
+    setState(() {
+      _status = 'Wachten op sync met ESP32...';
+    });
+
+    bool ready = false;
+    for (int i = 0; i < 20; i++) {
+      ready = await _esp32Service.isPlaybackReady();
+      if (ready) {
+        break;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+
+    if (!ready) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _status = 'ESP32 nog niet klaar';
+        _errorMessage =
+            'Wacht nog even tot de PC de MIDI naar TXT heeft geconverteerd.';
+      });
+      return;
+    }
+
+    await _esp32Service.startSynchronizedPlayback(
+      delayMs: _hiddenStartDelayMillis,
+    );
 
     _stopGame(stopSound: false, keepOverlay: true);
 
@@ -876,40 +1125,44 @@ class _GamePageState extends State<GamePage> {
     _nextMissIndex = 0;
     _remainingNotes = _notes.length;
 
-    _ticker = Timer.periodic(const Duration(milliseconds: _gameLoopIntervalMillis), (Timer timer) {
-      if (!mounted || !_isPlaying || _gameOver || _songFinished) {
-        timer.cancel();
-        return;
-      }
+    _ticker = Timer.periodic(
+      const Duration(milliseconds: _gameLoopIntervalMillis),
+      (Timer timer) {
+        if (!mounted || !_isPlaying || _gameOver || _songFinished) {
+          timer.cancel();
+          return;
+        }
 
-      final double elapsedMillis = (_gameClock.elapsedMicroseconds - _songStartMicros) / 1000;
+        final double elapsedMillis =
+            (_gameClock.elapsedMicroseconds - _songStartMicros) / 1000;
 
-      if (elapsedMillis < 0) {
+        if (elapsedMillis < 0) {
+          setState(() {
+            _playheadMillis = elapsedMillis;
+          });
+          return;
+        }
+
         setState(() {
           _playheadMillis = elapsedMillis;
         });
-        return;
-      }
 
-      setState(() {
-        _playheadMillis = elapsedMillis;
-      });
+        _processTrackAudio(elapsedMillis);
 
-      _processTrackAudio(elapsedMillis);
+        if (_processMisses(elapsedMillis)) {
+          return;
+        }
 
-      if (_processMisses(elapsedMillis)) {
-        return;
-      }
-
-      if (_remainingNotes <= 0) {
-        _songFinished = true;
-        _isPlaying = false;
-        _status = 'Klaar';
-        _stopAllAudio();
-        _gameClock.stop();
-        timer.cancel();
-      }
-    });
+        if (_remainingNotes <= 0) {
+          _songFinished = true;
+          _isPlaying = false;
+          _status = 'Klaar';
+          _stopAllAudio();
+          _gameClock.stop();
+          timer.cancel();
+        }
+      },
+    );
   }
 
   double _effectiveStartMillis(_GameTileNote note) {
@@ -1036,25 +1289,24 @@ class _GamePageState extends State<GamePage> {
   }
 
   _GameTileNote? _findTappedNoteInLane(int lane) {
-    final List<_GameTileNote> candidates = _notes
-        .where(
-          (_GameTileNote note) {
-            if (note.hit || note.missed || note.lane != lane) {
-              return false;
-            }
-            final double effectiveStart = _effectiveStartMillis(note);
-            return _playheadMillis >= effectiveStart - widget.difficulty.tapWindowEarlyMillis &&
-                _playheadMillis <= effectiveStart + widget.difficulty.tapWindowLateMillis &&
-                effectiveStart - _playheadMillis <= widget.difficulty.previewAheadMillis;
-          },
-        )
-        .toList();
+    final List<_GameTileNote> candidates = _notes.where((_GameTileNote note) {
+      if (note.hit || note.missed || note.lane != lane) {
+        return false;
+      }
+      final double effectiveStart = _effectiveStartMillis(note);
+      return _playheadMillis >=
+              effectiveStart - widget.difficulty.tapWindowEarlyMillis &&
+          _playheadMillis <=
+              effectiveStart + widget.difficulty.tapWindowLateMillis &&
+          effectiveStart - _playheadMillis <=
+              widget.difficulty.previewAheadMillis;
+    }).toList();
 
     if (candidates.isEmpty) {
       return null;
     }
 
-    candidates.sort(( _GameTileNote a, _GameTileNote b) {
+    candidates.sort((_GameTileNote a, _GameTileNote b) {
       final double da = (_effectiveStartMillis(a) - _playheadMillis).abs();
       final double db = (_effectiveStartMillis(b) - _playheadMillis).abs();
       return da.compareTo(db);
@@ -1090,8 +1342,10 @@ class _GamePageState extends State<GamePage> {
           best = candidate;
           continue;
         }
-        final double bestDelta = (_effectiveStartMillis(best) - _playheadMillis).abs();
-        final double candidateDelta = (_effectiveStartMillis(candidate) - _playheadMillis).abs();
+        final double bestDelta = (_effectiveStartMillis(best) - _playheadMillis)
+            .abs();
+        final double candidateDelta =
+            (_effectiveStartMillis(candidate) - _playheadMillis).abs();
         if (candidateDelta < bestDelta) {
           best = candidate;
         }
@@ -1106,7 +1360,9 @@ class _GamePageState extends State<GamePage> {
       return;
     }
 
-    final _GameTileNote? tapped = _findTappedNoteByPosition(event.localPosition.dx);
+    final _GameTileNote? tapped = _findTappedNoteByPosition(
+      event.localPosition.dx,
+    );
     if (tapped == null) {
       _registerJudgement('Bad Tap');
       if (widget.difficulty.badTapEndsGame) {
@@ -1207,113 +1463,125 @@ class _GamePageState extends State<GamePage> {
         ),
         child: SafeArea(
           child: _isLoading
-              ? const Center(child: CircularProgressIndicator(color: Colors.white))
+              ? const Center(
+                  child: CircularProgressIndicator(color: Colors.white),
+                )
               : _errorMessage != null && song == null
-                  ? Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Text(
-                          _errorMessage!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      ),
-                    )
-                  : Column(
-                      children: <Widget>[
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-                          child: Row(
-                            children: <Widget>[
-                              GestureDetector(
-                                onTap: () => Navigator.of(context).pop(),
-                                child: Container(
-                                  width: 40,
-                                  height: 40,
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.06),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: Colors.white12),
-                                  ),
-                                  child: const Icon(Icons.chevron_left, color: Colors.white),
-                                ),
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(
+                      _errorMessage!,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                  ),
+                )
+              : Column(
+                  children: <Widget>[
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+                      child: Row(
+                        children: <Widget>[
+                          GestureDetector(
+                            onTap: () => Navigator.of(context).pop(),
+                            child: Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.white12),
                               ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Text(
-                                  '${widget.song.name}  |  L${widget.difficulty.level}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                  ),
+                              child: const Icon(
+                                Icons.chevron_left,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              '${widget.sourceName}  |  L${widget.difficulty.level}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          Text(
+                            _gameOver
+                                ? 'GAME OVER'
+                                : _songFinished
+                                ? 'CLEARED'
+                                : _isPlaying
+                                ? 'PLAY'
+                                : 'READY',
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: <Widget>[
+                              Text(
+                                'Score $_score',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w800,
                                 ),
                               ),
                               Text(
-                                _gameOver
-                                    ? 'GAME OVER'
-                                    : _songFinished
-                                        ? 'CLEARED'
-                                        : _isPlaying
-                                            ? 'PLAY'
-                                            : 'READY',
+                                'Combo $_combo',
                                 style: const TextStyle(
-                                  color: Colors.white54,
-                                  fontSize: 11,
+                                  color: Colors.white70,
+                                  fontSize: 10,
                                   fontWeight: FontWeight.w700,
                                 ),
                               ),
-                              const SizedBox(width: 10),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.end,
-                                children: <Widget>[
-                                  Text(
-                                    'Score $_score',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                  Text(
-                                    'Combo $_combo',
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                ],
-                              ),
                             ],
                           ),
-                        ),
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(26),
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    begin: Alignment.topCenter,
-                                    end: Alignment.bottomCenter,
-                                    colors: <Color>[
-                                      Color(0xFF050505),
-                                      Color(0xFF0A0A0A),
-                                      Color(0xFF111111),
-                                    ],
-                                  ),
-                                  border: Border.all(color: Colors.white10),
-                                ),
-                                child: LayoutBuilder(
-                                  builder: (BuildContext context, BoxConstraints constraints) {
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(26),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: <Color>[
+                                  Color(0xFF050505),
+                                  Color(0xFF0A0A0A),
+                                  Color(0xFF111111),
+                                ],
+                              ),
+                              border: Border.all(color: Colors.white10),
+                            ),
+                            child: LayoutBuilder(
+                              builder:
+                                  (
+                                    BuildContext context,
+                                    BoxConstraints constraints,
+                                  ) {
                                     _boardWidth = constraints.maxWidth;
-                                    final double laneWidth = constraints.maxWidth / 4;
-                                    final double hitZoneY = constraints.maxHeight * 0.82;
-                                    final double travelDistance = hitZoneY + 120;
+                                    final double laneWidth =
+                                        constraints.maxWidth / 4;
+                                    final double hitZoneY =
+                                        constraints.maxHeight * 0.82;
+                                    final double travelDistance =
+                                        hitZoneY + 120;
                                     final List<Widget> notes = ready
                                         ? _buildVisibleNotes(
                                             constraints.maxHeight,
@@ -1327,12 +1595,19 @@ class _GamePageState extends State<GamePage> {
                                       children: <Widget>[
                                         Positioned.fill(
                                           child: Row(
-                                            children: List<Widget>.generate(4, (int index) {
+                                            children: List<Widget>.generate(4, (
+                                              int index,
+                                            ) {
                                               return Expanded(
                                                 child: Container(
                                                   decoration: BoxDecoration(
                                                     border: Border(
-                                                      left: index == 0 ? BorderSide.none : const BorderSide(color: Colors.white10),
+                                                      left: index == 0
+                                                          ? BorderSide.none
+                                                          : const BorderSide(
+                                                              color: Colors
+                                                                  .white10,
+                                                            ),
                                                     ),
                                                   ),
                                                 ),
@@ -1349,10 +1624,15 @@ class _GamePageState extends State<GamePage> {
                                             child: Container(
                                               height: 144,
                                               decoration: BoxDecoration(
-                                                color: const Color(0xFF9E9E9E).withValues(alpha: 0.18),
-                                                borderRadius: BorderRadius.circular(18),
+                                                color: const Color(
+                                                  0xFF9E9E9E,
+                                                ).withValues(alpha: 0.18),
+                                                borderRadius:
+                                                    BorderRadius.circular(18),
                                                 border: Border.all(
-                                                  color: const Color(0xFFBDBDBD).withValues(alpha: 0.55),
+                                                  color: const Color(
+                                                    0xFFBDBDBD,
+                                                  ).withValues(alpha: 0.55),
                                                   width: 2,
                                                 ),
                                               ),
@@ -1364,7 +1644,8 @@ class _GamePageState extends State<GamePage> {
                                           right: 12,
                                           top: 12,
                                           child: Row(
-                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.spaceBetween,
                                             children: <Widget>[
                                               Text(
                                                 'P $_perfectCount  G $_goodCount  O $_okCount  M $_missCount',
@@ -1388,46 +1669,74 @@ class _GamePageState extends State<GamePage> {
                                         Positioned.fill(
                                           child: Listener(
                                             behavior: HitTestBehavior.opaque,
-                                            onPointerDown: _handleBoardPointerDown,
+                                            onPointerDown:
+                                                _handleBoardPointerDown,
                                             child: const SizedBox.expand(),
                                           ),
                                         ),
                                         if (_gameOver || _songFinished)
                                           Positioned.fill(
                                             child: Container(
-                                              color: Colors.black.withValues(alpha: 0.72),
+                                              color: Colors.black.withValues(
+                                                alpha: 0.72,
+                                              ),
                                               child: Center(
                                                 child: Container(
-                                                  margin: const EdgeInsets.all(24),
-                                                  padding: const EdgeInsets.all(22),
+                                                  margin: const EdgeInsets.all(
+                                                    24,
+                                                  ),
+                                                  padding: const EdgeInsets.all(
+                                                    22,
+                                                  ),
                                                   decoration: BoxDecoration(
-                                                    color: const Color(0xFF101010),
-                                                    borderRadius: BorderRadius.circular(24),
-                                                    border: Border.all(color: Colors.white12),
+                                                    color: const Color(
+                                                      0xFF101010,
+                                                    ),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          24,
+                                                        ),
+                                                    border: Border.all(
+                                                      color: Colors.white12,
+                                                    ),
                                                   ),
                                                   child: Column(
-                                                    mainAxisSize: MainAxisSize.min,
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
                                                     children: <Widget>[
                                                       Text(
-                                                        _gameOver ? 'GAME OVER' : 'DONE',
+                                                        _gameOver
+                                                            ? 'GAME OVER'
+                                                            : 'DONE',
                                                         style: const TextStyle(
                                                           color: Colors.white,
                                                           fontSize: 28,
-                                                          fontWeight: FontWeight.w900,
+                                                          fontWeight:
+                                                              FontWeight.w900,
                                                         ),
                                                       ),
-                                                      const SizedBox(height: 10),
-                                                      Text(
-                                                        _errorMessage ?? 'Goed gespeeld',
-                                                        textAlign: TextAlign.center,
-                                                        style: const TextStyle(color: Colors.white70),
+                                                      const SizedBox(
+                                                        height: 10,
                                                       ),
-                                                      const SizedBox(height: 16),
+                                                      Text(
+                                                        _errorMessage ??
+                                                            'Goed gespeeld',
+                                                        textAlign:
+                                                            TextAlign.center,
+                                                        style: const TextStyle(
+                                                          color: Colors.white70,
+                                                        ),
+                                                      ),
+                                                      const SizedBox(
+                                                        height: 16,
+                                                      ),
                                                       FilledButton(
                                                         onPressed: () {
                                                           _startGameLoop();
                                                         },
-                                                        child: const Text('Play Again'),
+                                                        child: const Text(
+                                                          'Play Again',
+                                                        ),
                                                       ),
                                                     ],
                                                   ),
@@ -1435,20 +1744,34 @@ class _GamePageState extends State<GamePage> {
                                               ),
                                             ),
                                           ),
-                                        if (!_isLoading && !_isPlaying && !_gameOver && !_songFinished)
+                                        if (!_isLoading &&
+                                            !_isPlaying &&
+                                            !_gameOver &&
+                                            !_songFinished)
                                           Positioned.fill(
                                             child: Container(
-                                              color: Colors.black.withValues(alpha: 0.36),
+                                              color: Colors.black.withValues(
+                                                alpha: 0.36,
+                                              ),
                                               child: Center(
                                                 child: FilledButton(
-                                                  onPressed: _startGameLoop,
+                                                  onPressed: () {
+                                                    _startGameLoop();
+                                                  },
                                                   style: FilledButton.styleFrom(
-                                                    backgroundColor: Colors.white,
-                                                    foregroundColor: Colors.black,
-                                                    padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 20),
+                                                    backgroundColor:
+                                                        Colors.white,
+                                                    foregroundColor:
+                                                        Colors.black,
+                                                    padding:
+                                                        const EdgeInsets.symmetric(
+                                                          horizontal: 40,
+                                                          vertical: 20,
+                                                        ),
                                                     textStyle: const TextStyle(
                                                       fontSize: 22,
-                                                      fontWeight: FontWeight.w900,
+                                                      fontWeight:
+                                                          FontWeight.w900,
                                                     ),
                                                   ),
                                                   child: const Text('START'),
@@ -1458,7 +1781,12 @@ class _GamePageState extends State<GamePage> {
                                           ),
                                         if (_lastJudgement.isNotEmpty &&
                                             _lastJudgementAt != null &&
-                                            DateTime.now().difference(_lastJudgementAt!) < const Duration(milliseconds: 700))
+                                            DateTime.now().difference(
+                                                  _lastJudgementAt!,
+                                                ) <
+                                                const Duration(
+                                                  milliseconds: 700,
+                                                ))
                                           Positioned(
                                             left: 0,
                                             right: 0,
@@ -1466,18 +1794,31 @@ class _GamePageState extends State<GamePage> {
                                             child: IgnorePointer(
                                               child: Center(
                                                 child: Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 14,
+                                                        vertical: 8,
+                                                      ),
                                                   decoration: BoxDecoration(
-                                                    color: Colors.black.withValues(alpha: 0.54),
-                                                    borderRadius: BorderRadius.circular(999),
-                                                    border: Border.all(color: Colors.white24),
+                                                    color: Colors.black
+                                                        .withValues(
+                                                          alpha: 0.54,
+                                                        ),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          999,
+                                                        ),
+                                                    border: Border.all(
+                                                      color: Colors.white24,
+                                                    ),
                                                   ),
                                                   child: Text(
                                                     _lastJudgement,
                                                     style: const TextStyle(
                                                       color: Colors.white,
                                                       fontSize: 16,
-                                                      fontWeight: FontWeight.w900,
+                                                      fontWeight:
+                                                          FontWeight.w900,
                                                     ),
                                                   ),
                                                 ),
@@ -1487,13 +1828,13 @@ class _GamePageState extends State<GamePage> {
                                       ],
                                     );
                                   },
-                                ),
-                              ),
                             ),
                           ),
                         ),
-                      ],
+                      ),
                     ),
+                  ],
+                ),
         ),
       ),
     );
@@ -1518,13 +1859,16 @@ class _GamePageState extends State<GamePage> {
       }
 
       final double effectiveStart = _effectiveStartMillis(note);
-      if (effectiveStart - elapsedMillis > widget.difficulty.previewAheadMillis ||
+      if (effectiveStart - elapsedMillis >
+              widget.difficulty.previewAheadMillis ||
           elapsedMillis - effectiveStart > widget.difficulty.missAfterMillis) {
         continue;
       }
 
       final double timeToHit = effectiveStart - elapsedMillis;
-      final double top = hitZoneY - (timeToHit / widget.difficulty.previewAheadMillis) * travelDistance;
+      final double top =
+          hitZoneY -
+          (timeToHit / widget.difficulty.previewAheadMillis) * travelDistance;
       final double tileHeight = (height * 0.13).clamp(72.0, 120.0);
       final double left = note.lane * laneWidth + 2;
       final double width = laneWidth - 4;
@@ -1560,7 +1904,9 @@ class _GamePageState extends State<GamePage> {
                     width: 6,
                     decoration: BoxDecoration(
                       color: _laneAccent(note.lane).withValues(alpha: 0.92),
-                      borderRadius: const BorderRadius.horizontal(left: Radius.circular(16)),
+                      borderRadius: const BorderRadius.horizontal(
+                        left: Radius.circular(16),
+                      ),
                     ),
                   ),
                 ),
