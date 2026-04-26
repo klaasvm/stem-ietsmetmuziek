@@ -3,6 +3,8 @@ import network
 import gc
 import time
 
+import music_player
+
 try:
     import ujson as json
 except:
@@ -287,6 +289,14 @@ def start_server(port=80):
 
             log("Upload voltooid: {} ({} bytes)".format(filepath, bytes_written))
             send_response(conn, "Upload saved: {}".format(filepath))
+
+            if safe_name.lower().endswith(".txt"):
+                try:
+                    log("TXT upload ontvangen, playback start: {}".format(filepath))
+                    music_player.auto_play_incoming_txt(filepath)
+                    log("TXT playback afgerond: {}".format(filepath))
+                except Exception as exc:
+                    log("TXT playback mislukt: {}".format(exc))
         except OSError as e:
             log("Socket fout: {}".format(e))
         finally:
