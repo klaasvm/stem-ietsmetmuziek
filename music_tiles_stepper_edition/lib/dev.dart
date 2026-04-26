@@ -491,7 +491,7 @@ class _DevPageState extends State<DevPage> {
     final Stopwatch stopwatch = Stopwatch()..start();
     _logDebug('Bestandskiezer gestart');
     try {
-      final FilePickerResult? result = await FilePicker.platform.pickFiles(
+      final FilePickerResult? result = await FilePicker.pickFiles(
         type: FileType.custom,
         allowedExtensions: const <String>['mid', 'midi'],
         withData: true,
