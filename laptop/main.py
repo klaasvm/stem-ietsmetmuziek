@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib import error, parse, request
 
 DISCOVERY_TIMEOUT = 0.8
+TIME_PATTERN = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 
 
 def log(message):
@@ -72,11 +73,23 @@ def fetch_raw_from_esp32_endpoints(ip):
     return None
 
 
+def raw_body_looks_like_esp32(raw):
+    trimmed = raw.strip()
+    if not trimmed:
+        return False
+    if TIME_PATTERN.match(trimmed):
+        return True
+    lowered = trimmed.lower()
+    return "esp32" in lowered or "<html" in lowered
+
+
 def looks_like_esp32(ip):
     raw = fetch_raw_from_esp32_endpoints(ip)
     if raw is None:
         return False
-    return has_expected_confirm_token(ip)
+    if not has_expected_confirm_token(ip):
+        return False
+    return raw_body_looks_like_esp32(raw)
 
 
 def discover_esp32_via_hostnames():
@@ -95,31 +108,46 @@ def discover_esp32_via_hostnames():
     return None
 
 
-def collect_subnet_prefixes():
-    prefixes = []
-    seen = set()
-
-    def add_prefix(prefix):
-        if not prefix.startswith("192.168."):
-            return
-        if prefix in seen:
-            return
-        seen.add(prefix)
-        prefixes.append(prefix)
+def collect_local_ipv4_addresses():
+    addresses = set()
 
     try:
         hostname = socket.gethostname()
-        addrs = socket.gethostbyname_ex(hostname)[2]
-        for ip in addrs:
-            if not is_private_ipv4(ip):
-                continue
-            parts = ip.split(".")
-            add_prefix("{}.{}.{}".format(parts[0], parts[1], parts[2]))
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if is_private_ipv4(ip):
+                addresses.add(ip)
     except Exception:
         pass
 
+    # UDP connect bepaalt lokaal source-IP zonder echt netwerkverkeer te vereisen.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))
+            ip = probe.getsockname()[0]
+            if is_private_ipv4(ip):
+                addresses.add(ip)
+    except Exception:
+        pass
+
+    return sorted(addresses)
+
+
+def collect_subnet_prefixes():
+    prefixes = {}
+
+    for ip in collect_local_ipv4_addresses():
+        parts = ip.split(".")
+        if len(parts) != 4:
+            continue
+        try:
+            own_host = int(parts[3])
+        except ValueError:
+            continue
+        prefix = "{}.{}.{}".format(parts[0], parts[1], parts[2])
+        prefixes[prefix] = own_host
+
     for prefix in ("192.168.0", "192.168.1", "192.168.2", "192.168.178"):
-        add_prefix(prefix)
+        prefixes.setdefault(prefix, -1)
 
     return prefixes
 
@@ -130,18 +158,23 @@ def discover_esp32_ip():
         return host_ip
 
     candidates = []
-    for prefix in collect_subnet_prefixes():
+    for prefix, own_host in collect_subnet_prefixes().items():
         for host in range(2, 255):
+            if host == own_host:
+                continue
             candidates.append("{}.{}".format(prefix, host))
 
     with ThreadPoolExecutor(max_workers=24) as pool:
-        futures = {pool.submit(looks_like_esp32, ip): ip for ip in candidates}
-        for future in as_completed(futures):
-            try:
-                if future.result():
-                    return futures[future]
-            except Exception:
-                pass
+        batch_size = 24
+        for start in range(0, len(candidates), batch_size):
+            batch = candidates[start : start + batch_size]
+            futures = {pool.submit(looks_like_esp32, ip): ip for ip in batch}
+            for future in as_completed(futures):
+                try:
+                    if future.result():
+                        return futures[future]
+                except Exception:
+                    pass
 
     return None
 
@@ -272,15 +305,24 @@ def parse_args():
     return parser.parse_args()
 
 
+def resolve_output_dir(output_arg):
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if os.path.isabs(output_arg):
+        return output_arg
+    return os.path.join(script_dir, output_arg)
+
+
 def main():
     args = parse_args()
-    ensure_output_dir(args.out)
+    output_dir = resolve_output_dir(args.out)
+    ensure_output_dir(output_dir)
+    log("Download map: {}".format(output_dir))
 
     ip = connect_esp32(preferred_ip=args.ip, retry_delay=args.reconnect_seconds)
 
     while True:
         try:
-            processed = process_remote_files(ip, args.out)
+            processed = process_remote_files(ip, output_dir)
             if processed == 0:
                 time.sleep(args.poll_seconds)
         except KeyboardInterrupt:
