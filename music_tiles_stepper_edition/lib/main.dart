@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'app_update_service.dart';
 import 'dev.dart';
+import 'esp32_service.dart';
 import 'play.dart';
 
 void main() {
@@ -36,6 +37,7 @@ class StartPage extends StatefulWidget {
 
 class _StartPageState extends State<StartPage> {
   final AppUpdateService _appUpdateService = AppUpdateService();
+  final Esp32Service _esp32Service = Esp32Service.instance;
   AppUpdateInfo? _requiredUpdate;
   bool _updateCheckDone = false;
   bool _isInstallingUpdate = false;
@@ -49,6 +51,9 @@ class _StartPageState extends State<StartPage> {
   @override
   void initState() {
     super.initState();
+    _esp32Service.addListener(_onEsp32StateChanged);
+    _onEsp32StateChanged();
+    _esp32Service.startBackgroundLookup();
     () async {
       try {
         await GitHubSongCatalog.load();
@@ -58,7 +63,26 @@ class _StartPageState extends State<StartPage> {
       }
     }();
     _checkForUpdate();
-    _startEsp32Lookup();
+  }
+
+  @override
+  void dispose() {
+    _esp32Service.removeListener(_onEsp32StateChanged);
+    super.dispose();
+  }
+
+  void _onEsp32StateChanged() {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _esp32LookupRunning = _esp32Service.lookupRunning;
+      _esp32LookupSucceeded = _esp32Service.lookupSucceeded;
+      _esp32Status = _esp32Service.status;
+      _esp32RawData = _esp32Service.rawData;
+      _esp32Ip = _esp32Service.ip;
+    });
   }
 
   Future<void> _startEsp32Lookup() async {
@@ -149,9 +173,7 @@ class _StartPageState extends State<StartPage> {
           ? candidates.length
           : (index + batchSize);
       final List<String> batch = candidates.sublist(index, end);
-      final List<bool> matches = await Future.wait(
-        batch.map(_looksLikeEsp32),
-      );
+      final List<bool> matches = await Future.wait(batch.map(_looksLikeEsp32));
 
       for (int i = 0; i < batch.length; i++) {
         if (matches[i]) {
@@ -164,15 +186,13 @@ class _StartPageState extends State<StartPage> {
   }
 
   Future<String?> _discoverEsp32ViaHostnames() async {
-    const List<String> hostnames = <String>[
-      'esp32.local',
-      'esp32',
-    ];
+    const List<String> hostnames = <String>['esp32.local', 'esp32'];
 
     for (final String host in hostnames) {
       try {
-        final List<InternetAddress> resolved = await InternetAddress.lookup(host)
-            .timeout(const Duration(milliseconds: 900));
+        final List<InternetAddress> resolved = await InternetAddress.lookup(
+          host,
+        ).timeout(const Duration(milliseconds: 900));
         for (final InternetAddress address in resolved) {
           final String ip = address.address;
           if (!_isPrivateIpv4(ip)) {
@@ -289,9 +309,10 @@ class _StartPageState extends State<StartPage> {
         return false;
       }
 
-      final String body = await response.transform(utf8.decoder).join().timeout(
-        const Duration(milliseconds: 1200),
-      );
+      final String body = await response
+          .transform(utf8.decoder)
+          .join()
+          .timeout(const Duration(milliseconds: 1200));
       return body.toLowerCase().contains('ietsmetmuziek');
     } catch (_) {
       return false;
@@ -318,9 +339,10 @@ class _StartPageState extends State<StartPage> {
           continue;
         }
 
-        final String body = await response.transform(utf8.decoder).join().timeout(
-          const Duration(milliseconds: 1200),
-        );
+        final String body = await response
+            .transform(utf8.decoder)
+            .join()
+            .timeout(const Duration(milliseconds: 1200));
 
         if (body.trim().isNotEmpty) {
           return body;
@@ -401,7 +423,11 @@ class _StartPageState extends State<StartPage> {
                 ),
               ),
               TextButton(
-                onPressed: _esp32LookupRunning ? null : _startEsp32Lookup,
+                onPressed: _esp32LookupRunning
+                    ? null
+                    : () {
+                        _esp32Service.retryNow();
+                      },
                 style: TextButton.styleFrom(
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(horizontal: 8),

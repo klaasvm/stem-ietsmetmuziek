@@ -9,6 +9,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_midi/flutter_midi.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+import 'esp32_service.dart';
+
 class DevPage extends StatefulWidget {
   const DevPage({super.key, required this.title});
 
@@ -19,13 +21,15 @@ class DevPage extends StatefulWidget {
 }
 
 class _DevPageState extends State<DevPage> {
-  static const String _soundFontAsset = 'assets/sf2/generaluser_gs_softsynth_v144.sf2';
+  static const String _soundFontAsset =
+      'assets/sf2/generaluser_gs_softsynth_v144.sf2';
   static const String _githubOwner = 'klaasvm';
   static const String _githubRepo = 'stem-ietsmetmuziek';
   static const String _githubBranch = 'main';
   static const String _githubMusicFolder = 'music';
 
   final FlutterMidi _flutterMidi = FlutterMidi();
+  final Esp32Service _esp32Service = Esp32Service.instance;
   final List<Timer> _activeTimers = <Timer>[];
 
   String? _selectedFileName;
@@ -46,14 +50,85 @@ class _DevPageState extends State<DevPage> {
   List<GitHubMidiSong> _githubSongs = <GitHubMidiSong>[];
   bool _githubSongsLoading = false;
   String _appVersionLabel = 'Versie laden...';
+  bool _isUploadingToEsp32 = false;
 
   @override
   void initState() {
     super.initState();
+    _esp32Service.startBackgroundLookup();
     _logDebug('App gestart op ${Platform.operatingSystem}');
     _loadAppVersion();
     _loadSoundFont();
     _loadGitHubSongCatalog();
+  }
+
+  Future<void> _uploadSelectedFileToEsp32() async {
+    final Uint8List? data = _fileData;
+    if (data == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Kies eerst een MIDI-bestand om te uploaden.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _isUploadingToEsp32 = true;
+      _statusMessage = 'Upload naar ESP32 gestart...';
+    });
+
+    try {
+      final String fileId = DateTime.now().millisecondsSinceEpoch.toString();
+      final Esp32UploadResult result = await _esp32Service.uploadFile(
+        data: data,
+        fileName: _selectedFileName ?? 'upload.mid',
+        fileId: fileId,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      _logDebug(
+        'ESP32 upload klaar: ip=${result.ip}, id=${result.fileId}, name=${result.fileName}, server=${result.serverMessage}',
+      );
+      setState(() {
+        _statusMessage =
+            'ESP32 upload klaar (${result.fileName}, id=${result.fileId})';
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Upload gelukt naar ${result.ip} met id=${result.fileId}',
+          ),
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } catch (error, stackTrace) {
+      _logDebug(
+        'ESP32 upload mislukt',
+        error: error,
+        stackTrace: stackTrace,
+        updateStatus: true,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _statusMessage = 'ESP32 upload mislukt: $error';
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('ESP32 upload mislukt: $error')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isUploadingToEsp32 = false;
+        });
+      }
+    }
   }
 
   Future<void> _loadAppVersion() async {
@@ -70,7 +145,11 @@ class _DevPageState extends State<DevPage> {
       });
       _logDebug('App versie geladen: $_appVersionLabel');
     } catch (error, stackTrace) {
-      _logDebug('App versie laden mislukt', error: error, stackTrace: stackTrace);
+      _logDebug(
+        'App versie laden mislukt',
+        error: error,
+        stackTrace: stackTrace,
+      );
       if (!mounted) {
         return;
       }
@@ -137,7 +216,9 @@ class _DevPageState extends State<DevPage> {
       _logDebug('flutter_midi.unmute gestart');
       try {
         await _flutterMidi.unmute();
-        _logDebug('flutter_midi.unmute klaar, elapsedMs=${stopwatch.elapsedMilliseconds}');
+        _logDebug(
+          'flutter_midi.unmute klaar, elapsedMs=${stopwatch.elapsedMilliseconds}',
+        );
       } catch (error, stackTrace) {
         _logDebug(
           'flutter_midi.unmute mislukt, doorgaan zonder unmute',
@@ -153,7 +234,9 @@ class _DevPageState extends State<DevPage> {
             name: 'generaluser_gs_softsynth_v144.sf2',
           )
           .timeout(const Duration(seconds: 20));
-      _logDebug('flutter_midi.prepare klaar, totalElapsedMs=${stopwatch.elapsedMilliseconds}');
+      _logDebug(
+        'flutter_midi.prepare klaar, totalElapsedMs=${stopwatch.elapsedMilliseconds}',
+      );
 
       if (!mounted) {
         return;
@@ -208,7 +291,8 @@ class _DevPageState extends State<DevPage> {
       }
 
       final List<GitHubMidiSong> songs = <GitHubMidiSong>[];
-      final List<dynamic> treeEntries = decoded['tree'] as List<dynamic>? ?? <dynamic>[];
+      final List<dynamic> treeEntries =
+          decoded['tree'] as List<dynamic>? ?? <dynamic>[];
       for (final dynamic entry in treeEntries) {
         if (entry is! Map<String, dynamic>) {
           continue;
@@ -222,19 +306,18 @@ class _DevPageState extends State<DevPage> {
         if (!path.startsWith('$_githubMusicFolder/')) {
           continue;
         }
-        if (!path.toLowerCase().endsWith('.mid') && !path.toLowerCase().endsWith('.midi')) {
+        if (!path.toLowerCase().endsWith('.mid') &&
+            !path.toLowerCase().endsWith('.midi')) {
           continue;
         }
 
-        songs.add(
-          GitHubMidiSong(
-            name: path.split('/').last,
-            path: path,
-          ),
-        );
+        songs.add(GitHubMidiSong(name: path.split('/').last, path: path));
       }
 
-      songs.sort((GitHubMidiSong a, GitHubMidiSong b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      songs.sort(
+        (GitHubMidiSong a, GitHubMidiSong b) =>
+            a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+      );
 
       if (!mounted) {
         return;
@@ -248,7 +331,12 @@ class _DevPageState extends State<DevPage> {
       });
       _logDebug('GitHub song catalog klaar: count=${songs.length}');
     } catch (error, stackTrace) {
-      _logDebug('GitHub song catalog laden mislukt', error: error, stackTrace: stackTrace, updateStatus: true);
+      _logDebug(
+        'GitHub song catalog laden mislukt',
+        error: error,
+        stackTrace: stackTrace,
+        updateStatus: true,
+      );
       if (mounted) {
         setState(() {
           _statusMessage = 'GitHub songs laden mislukt: $error';
@@ -275,37 +363,41 @@ class _DevPageState extends State<DevPage> {
       return;
     }
 
-    final GitHubMidiSong? selectedSong = await showModalBottomSheet<GitHubMidiSong>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (BuildContext context) {
-        return SafeArea(
-          child: ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: _githubSongs.length + 1,
-            separatorBuilder: (_, int separatorIndex) => const Divider(height: 1),
-            itemBuilder: (BuildContext context, int index) {
-              if (index == 0) {
-                return ListTile(
-                  leading: const Icon(Icons.cloud_download),
-                  title: Text('GitHub songs ($_githubOwner/$_githubRepo/music)'),
-                  subtitle: Text('$_githubBranch branch'),
-                );
-              }
+    final GitHubMidiSong? selectedSong =
+        await showModalBottomSheet<GitHubMidiSong>(
+          context: context,
+          showDragHandle: true,
+          isScrollControlled: true,
+          builder: (BuildContext context) {
+            return SafeArea(
+              child: ListView.separated(
+                padding: const EdgeInsets.all(16),
+                itemCount: _githubSongs.length + 1,
+                separatorBuilder: (_, int separatorIndex) =>
+                    const Divider(height: 1),
+                itemBuilder: (BuildContext context, int index) {
+                  if (index == 0) {
+                    return ListTile(
+                      leading: const Icon(Icons.cloud_download),
+                      title: Text(
+                        'GitHub songs ($_githubOwner/$_githubRepo/music)',
+                      ),
+                      subtitle: Text('$_githubBranch branch'),
+                    );
+                  }
 
-              final GitHubMidiSong song = _githubSongs[index - 1];
-              return ListTile(
-                leading: const Icon(Icons.music_note),
-                title: Text(song.name),
-                subtitle: Text(song.path),
-                onTap: () => Navigator.of(context).pop(song),
-              );
-            },
-          ),
+                  final GitHubMidiSong song = _githubSongs[index - 1];
+                  return ListTile(
+                    leading: const Icon(Icons.music_note),
+                    title: Text(song.name),
+                    subtitle: Text(song.path),
+                    onTap: () => Navigator.of(context).pop(song),
+                  );
+                },
+              ),
+            );
+          },
         );
-      },
-    );
 
     if (selectedSong == null) {
       _logDebug('GitHub song picker geannuleerd');
@@ -328,17 +420,24 @@ class _DevPageState extends State<DevPage> {
       final HttpClientResponse response = await request.close();
 
       if (response.statusCode != 200) {
-        throw HttpException('GitHub raw download status ${response.statusCode}');
+        throw HttpException(
+          'GitHub raw download status ${response.statusCode}',
+        );
       }
 
       final Uint8List bytes = await response
-          .fold<BytesBuilder>(BytesBuilder(), (BytesBuilder builder, List<int> chunk) {
+          .fold<BytesBuilder>(BytesBuilder(), (
+            BytesBuilder builder,
+            List<int> chunk,
+          ) {
             builder.add(chunk);
             return builder;
           })
           .then((BytesBuilder builder) => builder.takeBytes());
 
-      _logDebug('GitHub song bytes geladen: ${bytes.length} bytes, elapsedMs=${stopwatch.elapsedMilliseconds}');
+      _logDebug(
+        'GitHub song bytes geladen: ${bytes.length} bytes, elapsedMs=${stopwatch.elapsedMilliseconds}',
+      );
 
       ParsedMidiSong? parsedSong;
       try {
@@ -348,7 +447,11 @@ class _DevPageState extends State<DevPage> {
           'GitHub song parser klaar in ${parseWatch.elapsedMilliseconds}ms: notes=${parsedSong.notes.length}, maxPolyphony=${parsedSong.maxSimultaneousNotes}',
         );
       } catch (error, stackTrace) {
-        _logDebug('GitHub song parser faalde', error: error, stackTrace: stackTrace);
+        _logDebug(
+          'GitHub song parser faalde',
+          error: error,
+          stackTrace: stackTrace,
+        );
       }
 
       if (!mounted) {
@@ -368,7 +471,12 @@ class _DevPageState extends State<DevPage> {
       });
       _logDebug('GitHub song import klaar: ${song.name}');
     } catch (error, stackTrace) {
-      _logDebug('GitHub song import mislukt', error: error, stackTrace: stackTrace, updateStatus: true);
+      _logDebug(
+        'GitHub song import mislukt',
+        error: error,
+        stackTrace: stackTrace,
+        updateStatus: true,
+      );
       if (!mounted) {
         return;
       }
@@ -390,7 +498,9 @@ class _DevPageState extends State<DevPage> {
       );
 
       if (result == null) {
-        _logDebug('Bestandskiezer geannuleerd na ${stopwatch.elapsedMilliseconds}ms');
+        _logDebug(
+          'Bestandskiezer geannuleerd na ${stopwatch.elapsedMilliseconds}ms',
+        );
         return;
       }
 
@@ -398,8 +508,11 @@ class _DevPageState extends State<DevPage> {
       _logDebug(
         'Bestand gekozen: name=${file.name}, size=${file.size}, hasBytes=${file.bytes != null}, path=${file.path}',
       );
-      final Uint8List bytes = file.bytes ?? await File(file.path!).readAsBytes();
-      _logDebug('Bestand bytes geladen: ${bytes.length} bytes, elapsedMs=${stopwatch.elapsedMilliseconds}');
+      final Uint8List bytes =
+          file.bytes ?? await File(file.path!).readAsBytes();
+      _logDebug(
+        'Bestand bytes geladen: ${bytes.length} bytes, elapsedMs=${stopwatch.elapsedMilliseconds}',
+      );
 
       ParsedMidiSong? parsedSong;
       try {
@@ -429,7 +542,11 @@ class _DevPageState extends State<DevPage> {
       });
       _logDebug('Hexdump opgebouwd, chars=${_hexDisplay.length}');
     } catch (error) {
-      _logDebug('Fout tijdens bestandskiezer', error: error, updateStatus: true);
+      _logDebug(
+        'Fout tijdens bestandskiezer',
+        error: error,
+        updateStatus: true,
+      );
       if (!mounted) {
         return;
       }
@@ -447,7 +564,10 @@ class _DevPageState extends State<DevPage> {
     _logDebug('Playback sessie $session gestart');
 
     if (!_soundFontReady) {
-      _logDebug('Playback sessie $session afgebroken: soundfont niet ready', updateStatus: true);
+      _logDebug(
+        'Playback sessie $session afgebroken: soundfont niet ready',
+        updateStatus: true,
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Soundfont is nog niet geladen.')),
       );
@@ -456,7 +576,10 @@ class _DevPageState extends State<DevPage> {
 
     final Uint8List? bytes = _fileData;
     if (bytes == null) {
-      _logDebug('Playback sessie $session afgebroken: geen MIDI bytes', updateStatus: true);
+      _logDebug(
+        'Playback sessie $session afgebroken: geen MIDI bytes',
+        updateStatus: true,
+      );
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Kies eerst een .mid bestand.')),
       );
@@ -477,10 +600,14 @@ class _DevPageState extends State<DevPage> {
           });
         }
       } catch (error) {
-        _logDebug('MIDI parser fout in sessie $session', error: error, updateStatus: true);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('MIDI parser fout: $error')),
+        _logDebug(
+          'MIDI parser fout in sessie $session',
+          error: error,
+          updateStatus: true,
         );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('MIDI parser fout: $error')));
         return;
       }
     }
@@ -488,9 +615,14 @@ class _DevPageState extends State<DevPage> {
     final ParsedMidiSong finalSong = song;
 
     if (finalSong.notes.isEmpty) {
-      _logDebug('Playback sessie $session: geen noten om af te spelen', updateStatus: true);
+      _logDebug(
+        'Playback sessie $session: geen noten om af te spelen',
+        updateStatus: true,
+      );
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Geen afspeelbare noten gevonden in dit MIDI-bestand.')),
+        const SnackBar(
+          content: Text('Geen afspeelbare noten gevonden in dit MIDI-bestand.'),
+        ),
       );
       return;
     }
@@ -501,32 +633,38 @@ class _DevPageState extends State<DevPage> {
       _statusMessage = 'Afspelen gestart';
     });
     _startPlayhead(finalSong.totalDurationMicros);
-    _logDebug('Playback sessie $session loopt, notes=${finalSong.notes.length}', updateStatus: true);
+    _logDebug(
+      'Playback sessie $session loopt, notes=${finalSong.notes.length}',
+      updateStatus: true,
+    );
 
     final int playStartMicros = DateTime.now().microsecondsSinceEpoch;
     int noteIndex = 0;
 
     for (final MidiNoteEvent note in finalSong.notes) {
       if (!mounted || !_isPlaying) {
-        _logDebug('Playback sessie $session onderbroken bij noteIndex=$noteIndex');
+        _logDebug(
+          'Playback sessie $session onderbroken bij noteIndex=$noteIndex',
+        );
         break;
       }
 
       final int targetStartMicros = playStartMicros + note.startMicros;
-      final int delayMicros = targetStartMicros - DateTime.now().microsecondsSinceEpoch;
+      final int delayMicros =
+          targetStartMicros - DateTime.now().microsecondsSinceEpoch;
       if (delayMicros > 0) {
         await Future<void>.delayed(Duration(microseconds: delayMicros));
       }
 
       if (!mounted || !_isPlaying) {
-        _logDebug('Playback sessie $session stop na wachttijd bij noteIndex=$noteIndex');
+        _logDebug(
+          'Playback sessie $session stop na wachttijd bij noteIndex=$noteIndex',
+        );
         break;
       }
 
       try {
-        await _flutterMidi.playMidiNote(
-          midi: note.note,
-        );
+        await _flutterMidi.playMidiNote(midi: note.note);
       } catch (error, stackTrace) {
         _logDebug(
           'playMidiNote fout in sessie $session op noteIndex=$noteIndex (note=${note.note})',
@@ -549,7 +687,10 @@ class _DevPageState extends State<DevPage> {
           try {
             _flutterMidi.stopMidiNote(midi: note.note);
           } catch (error) {
-            _logDebug('stopMidiNote timer fout voor note=${note.note}', error: error);
+            _logDebug(
+              'stopMidiNote timer fout voor note=${note.note}',
+              error: error,
+            );
           }
         },
       );
@@ -558,7 +699,8 @@ class _DevPageState extends State<DevPage> {
     }
 
     final int endMicros = playStartMicros + finalSong.totalDurationMicros;
-    final int remainingMicros = endMicros - DateTime.now().microsecondsSinceEpoch;
+    final int remainingMicros =
+        endMicros - DateTime.now().microsecondsSinceEpoch;
     if (remainingMicros > 0) {
       await Future<void>.delayed(Duration(microseconds: remainingMicros));
     }
@@ -574,7 +716,10 @@ class _DevPageState extends State<DevPage> {
     });
     _playheadTimer?.cancel();
     _playheadTimer = null;
-    _logDebug('Playback sessie $session klaar in ${stopwatch.elapsedMilliseconds}ms', updateStatus: true);
+    _logDebug(
+      'Playback sessie $session klaar in ${stopwatch.elapsedMilliseconds}ms',
+      updateStatus: true,
+    );
   }
 
   void _startPlayhead(int totalDurationMicros) {
@@ -583,14 +728,20 @@ class _DevPageState extends State<DevPage> {
     _playTotalDurationMicros = totalDurationMicros;
     _playheadMillis = 0;
 
-    _playheadTimer = Timer.periodic(const Duration(milliseconds: 33), (Timer timer) {
+    _playheadTimer = Timer.periodic(const Duration(milliseconds: 33), (
+      Timer timer,
+    ) {
       if (!mounted || !_isPlaying) {
         timer.cancel();
         return;
       }
 
-      final int elapsedMicros = DateTime.now().microsecondsSinceEpoch - _playStartEpochMicros;
-      final int clampedMicros = elapsedMicros.clamp(0, _playTotalDurationMicros);
+      final int elapsedMicros =
+          DateTime.now().microsecondsSinceEpoch - _playStartEpochMicros;
+      final int clampedMicros = elapsedMicros.clamp(
+        0,
+        _playTotalDurationMicros,
+      );
       setState(() {
         _playheadMillis = clampedMicros / 1000;
       });
@@ -598,7 +749,9 @@ class _DevPageState extends State<DevPage> {
   }
 
   void _stopPlayback() {
-    _logDebug('Stop playback gevraagd; timers=${_activeTimers.length}, wasPlaying=$_isPlaying');
+    _logDebug(
+      'Stop playback gevraagd; timers=${_activeTimers.length}, wasPlaying=$_isPlaying',
+    );
     for (final Timer timer in _activeTimers) {
       timer.cancel();
     }
@@ -623,9 +776,11 @@ class _DevPageState extends State<DevPage> {
       final int end = (index + 16 < data.length) ? index + 16 : data.length;
       final Uint8List chunk = data.sublist(index, end);
 
-      final String hexBytes = chunk.map((int byte) {
-        return byte.toRadixString(16).padLeft(2, '0');
-      }).join(' ');
+      final String hexBytes = chunk
+          .map((int byte) {
+            return byte.toRadixString(16).padLeft(2, '0');
+          })
+          .join(' ');
       buffer.write(hexBytes.padRight(48));
       buffer.write('  ');
 
@@ -682,7 +837,9 @@ class _DevPageState extends State<DevPage> {
                       ),
                       const SizedBox(height: 8),
                       Text(
-                        _soundFontReady ? 'Piano soundfont actief' : 'Soundfont nog aan het laden',
+                        _soundFontReady
+                            ? 'Piano soundfont actief'
+                            : 'Soundfont nog aan het laden',
                       ),
                       const SizedBox(height: 6),
                       Text('App versie: $_appVersionLabel'),
@@ -698,9 +855,15 @@ class _DevPageState extends State<DevPage> {
                         runSpacing: 12,
                         children: [
                           FilledButton.icon(
-                            onPressed: _githubSongsLoading ? null : _openGitHubSongPicker,
+                            onPressed: _githubSongsLoading
+                                ? null
+                                : _openGitHubSongPicker,
                             icon: const Icon(Icons.cloud_download),
-                            label: Text(_githubSongsLoading ? 'GitHub songs laden...' : 'GitHub songs'),
+                            label: Text(
+                              _githubSongsLoading
+                                  ? 'GitHub songs laden...'
+                                  : 'GitHub songs',
+                            ),
                           ),
                           FilledButton.icon(
                             onPressed: _pickMidiFile,
@@ -708,9 +871,32 @@ class _DevPageState extends State<DevPage> {
                             label: const Text('MIDI openen'),
                           ),
                           FilledButton.tonalIcon(
-                            onPressed: _isPlaying ? _stopPlayback : _playSelectedMidi,
-                            icon: Icon(_isPlaying ? Icons.stop : Icons.play_arrow),
+                            onPressed: _isPlaying
+                                ? _stopPlayback
+                                : _playSelectedMidi,
+                            icon: Icon(
+                              _isPlaying ? Icons.stop : Icons.play_arrow,
+                            ),
                             label: Text(_isPlaying ? 'Stop' : 'Afspelen'),
+                          ),
+                          FilledButton.icon(
+                            onPressed: _isUploadingToEsp32
+                                ? null
+                                : _uploadSelectedFileToEsp32,
+                            icon: _isUploadingToEsp32
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.upload_file),
+                            label: Text(
+                              _isUploadingToEsp32
+                                  ? 'Uploaden...'
+                                  : 'Upload naar ESP32',
+                            ),
                           ),
                           FilledButton.tonalIcon(
                             onPressed: () {
@@ -718,15 +904,27 @@ class _DevPageState extends State<DevPage> {
                                 _showDebugPanel = !_showDebugPanel;
                               });
                             },
-                            icon: Icon(_showDebugPanel ? Icons.bug_report : Icons.bug_report_outlined),
-                            label: Text(_showDebugPanel ? 'Debug verbergen' : 'Debug tonen'),
+                            icon: Icon(
+                              _showDebugPanel
+                                  ? Icons.bug_report
+                                  : Icons.bug_report_outlined,
+                            ),
+                            label: Text(
+                              _showDebugPanel
+                                  ? 'Debug verbergen'
+                                  : 'Debug tonen',
+                            ),
                           ),
                           OutlinedButton.icon(
                             onPressed: _debugLog.isEmpty
                                 ? null
                                 : () {
-                                    Clipboard.setData(ClipboardData(text: _debugLog.join('\n')));
-                                    _logDebug('Debuglog gekopieerd naar klembord');
+                                    Clipboard.setData(
+                                      ClipboardData(text: _debugLog.join('\n')),
+                                    );
+                                    _logDebug(
+                                      'Debuglog gekopieerd naar klembord',
+                                    );
                                   },
                             icon: const Icon(Icons.copy_all),
                             label: const Text('Kopieer debuglog'),
@@ -804,19 +1002,25 @@ class _DevPageState extends State<DevPage> {
                         Text(
                           'Playhead: ${_playheadMillis.toStringAsFixed(0)} ms / ${(_parsedSong!.totalDurationMicros / 1000).round()} ms',
                         ),
-                        Text('Max tegelijk gespeelde noten: ${_parsedSong!.maxSimultaneousNotes}'),
+                        Text(
+                          'Max tegelijk gespeelde noten: ${_parsedSong!.maxSimultaneousNotes}',
+                        ),
                         const SizedBox(height: 10),
                         LayoutBuilder(
-                          builder: (BuildContext context, BoxConstraints constraints) {
-                            return SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: _MidiPianoRoll(
-                                song: _parsedSong!,
-                                playheadMillis: _playheadMillis,
-                                minWidth: constraints.maxWidth,
-                              ),
-                            );
-                          },
+                          builder:
+                              (
+                                BuildContext context,
+                                BoxConstraints constraints,
+                              ) {
+                                return SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  child: _MidiPianoRoll(
+                                    song: _parsedSong!,
+                                    playheadMillis: _playheadMillis,
+                                    minWidth: constraints.maxWidth,
+                                  ),
+                                );
+                              },
                         ),
                       ],
                     ),
@@ -929,14 +1133,17 @@ class MidiParser {
     for (int trackIndex = 0; trackIndex < trackCount; trackIndex++) {
       final String trackChunk = reader.readAscii(4);
       if (trackChunk != 'MTrk') {
-        throw FormatException('Verwacht MTrk, kreeg $trackChunk op track $trackIndex');
+        throw FormatException(
+          'Verwacht MTrk, kreeg $trackChunk op track $trackIndex',
+        );
       }
 
       final int trackLength = reader.readUint32();
       final int trackEnd = reader.offset + trackLength;
       int absoluteTick = 0;
       int runningStatus = 0;
-      final Map<int, List<_ActiveNote>> activeNotes = <int, List<_ActiveNote>>{};
+      final Map<int, List<_ActiveNote>> activeNotes =
+          <int, List<_ActiveNote>>{};
 
       while (reader.offset < trackEnd) {
         absoluteTick += reader.readVarInt();
@@ -945,7 +1152,9 @@ class MidiParser {
 
         if (statusByte < 0x80) {
           if (runningStatus == 0) {
-            throw FormatException('Running status zonder vorige status op track $trackIndex');
+            throw FormatException(
+              'Running status zonder vorige status op track $trackIndex',
+            );
           }
           eventStatus = runningStatus;
         } else {
@@ -963,8 +1172,14 @@ class MidiParser {
             break;
           }
           if (metaType == 0x51 && metaLength == 3) {
-            final int tempo = (metaData[0] << 16) | (metaData[1] << 8) | metaData[2];
-            tempoChanges.add(_TempoChange(tick: absoluteTick, microsecondsPerQuarterNote: tempo));
+            final int tempo =
+                (metaData[0] << 16) | (metaData[1] << 8) | metaData[2];
+            tempoChanges.add(
+              _TempoChange(
+                tick: absoluteTick,
+                microsecondsPerQuarterNote: tempo,
+              ),
+            );
           }
           continue;
         }
@@ -985,13 +1200,15 @@ class MidiParser {
             final int velocity = reader.readUint8();
             if (eventType == 0x90 && velocity > 0) {
               rawNoteCount += 1;
-              activeNotes.putIfAbsent(note, () => <_ActiveNote>[]).add(
-                _ActiveNote(
-                  note: note,
-                  velocity: velocity,
-                  startTick: absoluteTick,
-                ),
-              );
+              activeNotes
+                  .putIfAbsent(note, () => <_ActiveNote>[])
+                  .add(
+                    _ActiveNote(
+                      note: note,
+                      velocity: velocity,
+                      startTick: absoluteTick,
+                    ),
+                  );
             } else {
               final List<_ActiveNote>? stack = activeNotes[note];
               if (stack != null && stack.isNotEmpty) {
@@ -1021,7 +1238,9 @@ class MidiParser {
             reader.skip(1);
             break;
           default:
-            throw FormatException('Onbekende MIDI status 0x${eventStatus.toRadixString(16)} op track $trackIndex');
+            throw FormatException(
+              'Onbekende MIDI status 0x${eventStatus.toRadixString(16)} op track $trackIndex',
+            );
         }
       }
 
@@ -1048,8 +1267,16 @@ class MidiParser {
       if (note.endTick > maxEndTick) {
         maxEndTick = note.endTick;
       }
-      final int startMicros = _ticksToMicros(note.startTick, tempoChanges, ticksPerQuarterNote);
-      final int endMicros = _ticksToMicros(note.endTick, tempoChanges, ticksPerQuarterNote);
+      final int startMicros = _ticksToMicros(
+        note.startTick,
+        tempoChanges,
+        ticksPerQuarterNote,
+      );
+      final int endMicros = _ticksToMicros(
+        note.endTick,
+        tempoChanges,
+        ticksPerQuarterNote,
+      );
       playableNotes.add(
         MidiNoteEvent(
           note: note.note,
@@ -1090,7 +1317,11 @@ class MidiParser {
       }
     }
 
-    final int totalDurationMicros = _ticksToMicros(maxEndTick, tempoChanges, ticksPerQuarterNote);
+    final int totalDurationMicros = _ticksToMicros(
+      maxEndTick,
+      tempoChanges,
+      ticksPerQuarterNote,
+    );
 
     return ParsedMidiSong(
       notes: playableNotes,
@@ -1121,7 +1352,9 @@ class MidiParser {
       if (tempoChange.tick > tick) {
         break;
       }
-      micros += ((tempoChange.tick - previousTick) * currentTempo) ~/ ticksPerQuarterNote;
+      micros +=
+          ((tempoChange.tick - previousTick) * currentTempo) ~/
+          ticksPerQuarterNote;
       previousTick = tempoChange.tick;
       currentTempo = tempoChange.microsecondsPerQuarterNote;
     }
@@ -1161,7 +1394,10 @@ class _ByteReader {
   }
 
   int readUint32() {
-    return (readUint8() << 24) | (readUint8() << 16) | (readUint8() << 8) | readUint8();
+    return (readUint8() << 24) |
+        (readUint8() << 16) |
+        (readUint8() << 8) |
+        readUint8();
   }
 
   int readVarInt() {
@@ -1251,7 +1487,10 @@ class _MidiPianoRoll extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final double contentWidth = _MidiPianoRollPainter.estimateContentWidth(song, minWidth);
+    final double contentWidth = _MidiPianoRollPainter.estimateContentWidth(
+      song,
+      minWidth,
+    );
     return SizedBox(
       width: contentWidth,
       height: 260,
@@ -1277,7 +1516,8 @@ class _MidiPianoRollPainter extends CustomPainter {
   static const double _noteSpacing = 2.0;
 
   static double estimateContentWidth(ParsedMidiSong song, double minimumWidth) {
-    final double estimatedWidth = (song.totalDurationMicros / 1000) * _pixelsPerMillisecond + 120;
+    final double estimatedWidth =
+        (song.totalDurationMicros / 1000) * _pixelsPerMillisecond + 120;
     return estimatedWidth < minimumWidth ? minimumWidth : estimatedWidth;
   }
 
@@ -1296,18 +1536,26 @@ class _MidiPianoRollPainter extends CustomPainter {
       )..layout(maxWidth: size.width);
       emptyPainter.paint(
         canvas,
-        Offset((size.width - emptyPainter.width) / 2, (size.height - emptyPainter.height) / 2),
+        Offset(
+          (size.width - emptyPainter.width) / 2,
+          (size.height - emptyPainter.height) / 2,
+        ),
       );
       return;
     }
 
     final double totalDurationMillis = song.totalDurationMicros / 1000;
-    final double maxDuration = totalDurationMillis <= 0 ? 1 : totalDurationMillis;
-    final List<int> noteValues = song.notes.map((MidiNoteEvent note) => note.note).toList();
+    final double maxDuration = totalDurationMillis <= 0
+        ? 1
+        : totalDurationMillis;
+    final List<int> noteValues = song.notes
+        .map((MidiNoteEvent note) => note.note)
+        .toList();
     final int lowestNote = noteValues.reduce((int a, int b) => a < b ? a : b);
     final int highestNote = noteValues.reduce((int a, int b) => a > b ? a : b);
     final int noteRange = (highestNote - lowestNote + 1).clamp(1, 128);
-    final double noteStep = (size.height - 20).clamp(1.0, double.infinity) / noteRange;
+    final double noteStep =
+        (size.height - 20).clamp(1.0, double.infinity) / noteRange;
     final double scaleX = size.width / maxDuration;
 
     final Paint gridPaint = Paint()
@@ -1322,8 +1570,12 @@ class _MidiPianoRollPainter extends CustomPainter {
     final Paint barPaint = Paint();
     for (final MidiNoteEvent note in song.notes) {
       final double left = note.startMicros / 1000 * scaleX;
-      final double width = (note.durationMicros / 1000 * scaleX).clamp(2.0, size.width);
-      final double noteY = size.height - ((note.note - lowestNote + 1) * noteStep);
+      final double width = (note.durationMicros / 1000 * scaleX).clamp(
+        2.0,
+        size.width,
+      );
+      final double noteY =
+          size.height - ((note.note - lowestNote + 1) * noteStep);
       final Rect rect = Rect.fromLTWH(
         left,
         noteY - _noteHeight,
@@ -1338,15 +1590,21 @@ class _MidiPianoRollPainter extends CustomPainter {
       );
     }
 
-    final double playheadX = (playheadMillis.clamp(0, maxDuration) / maxDuration) * size.width;
+    final double playheadX =
+        (playheadMillis.clamp(0, maxDuration) / maxDuration) * size.width;
     final Paint playheadPaint = Paint()
       ..color = Colors.white
       ..strokeWidth = 2;
-    canvas.drawLine(Offset(playheadX, 0), Offset(playheadX, size.height), playheadPaint);
+    canvas.drawLine(
+      Offset(playheadX, 0),
+      Offset(playheadX, size.height),
+      playheadPaint,
+    );
   }
 
   @override
   bool shouldRepaint(covariant _MidiPianoRollPainter oldDelegate) {
-    return oldDelegate.song != song || oldDelegate.playheadMillis != playheadMillis;
+    return oldDelegate.song != song ||
+        oldDelegate.playheadMillis != playheadMillis;
   }
 }
