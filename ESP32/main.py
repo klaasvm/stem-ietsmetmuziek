@@ -1,6 +1,7 @@
 import socket
 import network
 import gc
+import time
 
 try:
     import ujson as json
@@ -8,6 +9,14 @@ except:
     import json
 
 UPLOAD_DIR = "uploads"
+
+def log(message):
+    try:
+        now = time.localtime()
+        stamp = "{:02d}:{:02d}:{:02d}".format(now[3], now[4], now[5])
+    except:
+        stamp = "--:--:--"
+    print("[{}] {}".format(stamp, message))
 
 def get_ip():
     wlan = network.WLAN(network.STA_IF)
@@ -18,6 +27,10 @@ def get_confirm_text():
 
 def get_status_text():
     return "esp32-ready"
+
+def should_log_request(path):
+    # /list and /confirm are polled frequently; skip noisy per-request logs.
+    return path != "/list" and path != "/confirm"
 
 def send_response(conn, body, content_type="text/plain; charset=utf-8", status_code=200, status_text="OK"):
     if isinstance(body, str):
@@ -60,12 +73,12 @@ def start_server(port=80):
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(addr)
     s.listen(3)
-    print(f"Server op http://{get_ip()}:{port}")
+    log("Server op http://{}:{}".format(get_ip(), port))
 
     while True:
         conn = None
         try:
-            conn, _ = s.accept()
+            conn, client_addr = s.accept()
             request_head = b""
 
             while b"\r\n\r\n" not in request_head and len(request_head) < 4096:
@@ -107,6 +120,10 @@ def start_server(port=80):
                 path, query = path_with_query.split("?", 1)
             else:
                 path, query = path_with_query, ""
+
+            if should_log_request(path):
+                log("Client verbonden: {}".format(client_addr))
+                log("Request: {} {}".format(method, path))
 
             headers = {}
             for line in lines[1:]:
@@ -165,8 +182,11 @@ def start_server(port=80):
                 filepath = "{}/{}_{}".format(UPLOAD_DIR, safe_id, safe_name)
                 try:
                     with open(filepath, "rb") as f:
+                        log("Download gestart: {}".format(filepath))
                         send_response(conn, f.read(), content_type="application/octet-stream")
+                    log("Download voltooid: {}".format(filepath))
                 except:
+                    log("Download mislukt, niet gevonden: {}".format(filepath))
                     send_error(conn, 404, "Not Found", "File not found")
                 continue
 
@@ -183,8 +203,10 @@ def start_server(port=80):
                 try:
                     import os
                     os.remove(filepath)
+                    log("Bestand verwijderd: {}".format(filepath))
                     send_response(conn, "Deleted: {}".format(filepath))
                 except:
+                    log("Delete mislukt, niet gevonden: {}".format(filepath))
                     send_error(conn, 404, "Not Found", "File not found")
                 continue
 
@@ -207,10 +229,12 @@ def start_server(port=80):
                         })
                     send_response(conn, json.dumps({"files": files}), content_type="application/json; charset=utf-8")
                 except Exception as e:
+                    log("List fout: {}".format(e))
                     send_error(conn, 500, "Internal Server Error", "List failed: {}".format(e))
                 continue
 
             if path != "/upload":
+                log("Status endpoint geraakt")
                 send_response(conn, get_status_text())
                 continue
 
@@ -232,6 +256,7 @@ def start_server(port=80):
                 continue
 
             filepath = "{}/{}_{}".format(UPLOAD_DIR, safe_id, safe_name)
+            log("Upload gestart: {} ({} bytes)".format(filepath, content_length))
             bytes_written = 0
             try:
                 with open(filepath, "wb") as f:
@@ -246,6 +271,7 @@ def start_server(port=80):
                         f.write(chunk)
                         bytes_written += len(chunk)
             except Exception as e:
+                log("Upload write fout: {}".format(e))
                 send_error(conn, 500, "Internal Server Error", "Write failed: {}".format(e))
                 continue
 
@@ -255,12 +281,14 @@ def start_server(port=80):
                     os.remove(filepath)
                 except:
                     pass
+                log("Upload incompleet: {} van {} bytes".format(bytes_written, content_length))
                 send_error(conn, 400, "Bad Request", "Incomplete upload body")
                 continue
 
+            log("Upload voltooid: {} ({} bytes)".format(filepath, bytes_written))
             send_response(conn, "Upload saved: {}".format(filepath))
         except OSError as e:
-            print("Fout:", e)
+            log("Socket fout: {}".format(e))
         finally:
             if conn is not None:
                 try:

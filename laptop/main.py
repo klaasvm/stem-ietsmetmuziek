@@ -297,18 +297,36 @@ def convert_midi_file(input_path):
 
 
 def process_local_downloads(download_dir):
-	converted = 0
+	converted_paths = []
 	for entry in sorted(download_dir.iterdir()):
 		if not entry.is_file() or entry.suffix.lower() not in INPUT_EXTENSIONS:
 			continue
 
 		try:
-			convert_midi_file(entry)
-			converted += 1
+			output_path = convert_midi_file(entry)
+			converted_paths.append(output_path)
 		except Exception as exc:
 			receive.log("Kon {} niet converteren: {}".format(entry.name, exc))
 
-	return converted
+	return converted_paths
+
+
+def upload_local_txt_files(ip, download_dir):
+	uploaded = 0
+	for entry in sorted(download_dir.iterdir()):
+		if not entry.is_file() or entry.suffix.lower() != ".txt":
+			continue
+
+		try:
+			result = receive.upload_file_to_esp32(ip, entry)
+			receive.log("Terug geupload naar ESP32: {} ({})".format(entry.name, result or "ok"))
+			entry.unlink()
+			receive.log("Lokaal txt verwijderd na upload: {}".format(entry.name))
+			uploaded += 1
+		except Exception as exc:
+			receive.log("Kon {} niet uploaden naar ESP32: {}".format(entry.name, exc))
+
+	return uploaded
 
 
 def parse_args():
@@ -347,8 +365,9 @@ def main():
 	while True:
 		try:
 			downloaded = receive.process_remote_files(ip, str(output_dir))
-			converted = process_local_downloads(output_dir)
-			if downloaded == 0 and converted == 0:
+			converted_paths = process_local_downloads(output_dir)
+			uploaded = upload_local_txt_files(ip, output_dir)
+			if downloaded == 0 and len(converted_paths) == 0 and uploaded == 0:
 				time.sleep(args.poll_seconds)
 		except KeyboardInterrupt:
 			receive.log("Gestopt door gebruiker.")

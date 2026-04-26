@@ -31,6 +31,7 @@ class Esp32Service extends ChangeNotifier {
   String? _ip;
   bool _started = false;
   bool _lookupInProgress = false;
+  bool _healthCheckInProgress = false;
   Timer? _retryTimer;
 
   bool get lookupRunning => _lookupRunning;
@@ -46,10 +47,12 @@ class Esp32Service extends ChangeNotifier {
 
     _started = true;
     _runLookup();
-    _retryTimer = Timer.periodic(const Duration(seconds: 8), (_) {
+    _retryTimer = Timer.periodic(const Duration(seconds: 4), (_) {
       if (_ip == null) {
         _runLookup();
+        return;
       }
+      _checkConnectionHealth();
     });
   }
 
@@ -182,7 +185,6 @@ class Esp32Service extends ChangeNotifier {
       _lookupSucceeded = true;
       _status = 'ESP32 gevonden op $discoveredIp';
       _rawData = raw;
-      _retryTimer?.cancel();
       notifyListeners();
     } catch (error) {
       _lookupRunning = false;
@@ -192,6 +194,36 @@ class Esp32Service extends ChangeNotifier {
       notifyListeners();
     } finally {
       _lookupInProgress = false;
+    }
+  }
+
+  Future<void> _checkConnectionHealth() async {
+    if (_healthCheckInProgress) {
+      return;
+    }
+
+    final String? currentIp = _ip;
+    if (currentIp == null) {
+      return;
+    }
+
+    _healthCheckInProgress = true;
+    try {
+      final bool ok = await _hasExpectedConfirmToken(currentIp);
+      if (ok) {
+        return;
+      }
+
+      _ip = null;
+      _lookupRunning = false;
+      _lookupSucceeded = false;
+      _status = 'ESP32 verbinding verbroken, opnieuw zoeken...';
+      _rawData = 'Confirm check faalde op $currentIp';
+      notifyListeners();
+
+      await _runLookup();
+    } finally {
+      _healthCheckInProgress = false;
     }
   }
 

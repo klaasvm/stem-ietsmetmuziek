@@ -10,6 +10,7 @@ from urllib import error, parse, request
 
 DISCOVERY_TIMEOUT = 0.8
 TIME_PATTERN = re.compile(r"^\d{2}:\d{2}:\d{2}$")
+MIDI_EXTENSIONS = (".mid", ".midi")
 
 
 def log(message):
@@ -24,6 +25,11 @@ def sanitize_file_name(value):
 
 def sanitize_file_id(value):
     return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def create_upload_file_id():
+    # Digits-only ID required by ESP32 side sanitization.
+    return str(int(time.time() * 1000))
 
 
 def is_private_ipv4(ip):
@@ -212,6 +218,32 @@ def delete_uploaded_file(ip, file_name, file_id):
         return body.strip()
 
 
+def upload_file_bytes(ip, file_name, file_id, data):
+    query = parse.urlencode({"name": file_name, "id": file_id})
+    url = "http://{}/upload?{}".format(ip, query)
+
+    req = request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/octet-stream")
+    req.add_header("Content-Length", str(len(data)))
+
+    with request.urlopen(req, timeout=15) as response:
+        body = response.read().decode("utf-8", "ignore")
+        if response.status != 200:
+            raise RuntimeError("Upload failed with status {}: {}".format(response.status, body))
+        return body.strip()
+
+
+def upload_file_to_esp32(ip, local_path):
+    path_str = os.fspath(local_path)
+    file_name = sanitize_file_name(os.path.basename(path_str))
+    file_id = create_upload_file_id()
+
+    with open(path_str, "rb") as f:
+        data = f.read()
+
+    return upload_file_bytes(ip, file_name, file_id, data)
+
+
 def ensure_output_dir(path):
     if not os.path.isdir(path):
         os.makedirs(path)
@@ -262,6 +294,9 @@ def process_remote_files(ip, output_dir):
         file_name = sanitize_file_name(raw_name)
         file_id = sanitize_file_id(raw_id)
         if not file_name or not file_id:
+            continue
+
+        if not file_name.lower().endswith(MIDI_EXTENSIONS):
             continue
 
         log("Nieuwe upload gevonden: id={} name={}".format(file_id, file_name))
