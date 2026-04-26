@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:ota_update/ota_update.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:pub_semver/pub_semver.dart';
@@ -41,6 +42,9 @@ class AppUpdateService {
   static const String _branch = 'main';
   static const String _versionJsonPath = 'version.json';
   static const String _defaultApkName = 'app-release.apk';
+  static const MethodChannel _updateChannel = MethodChannel(
+    'music_tiles_stepper_edition/update',
+  );
 
   Future<AppUpdateInfo?> checkForRequiredUpdate() async {
     if (!Platform.isAndroid) {
@@ -105,6 +109,17 @@ class AppUpdateService {
       );
     }
 
+    final bool canInstallPackages = await _canRequestPackageInstalls();
+    if (!canInstallPackages) {
+      onStatus?.call(
+        'Toestemming nodig: sta "Onbekende apps installeren" toe voor deze app.',
+      );
+      await _openUnknownSourcesSettings();
+      throw StateError(
+        'Installatie geblokkeerd. Sta "Onbekende apps installeren" toe en start de update opnieuw.',
+      );
+    }
+
     final Completer<void> completer = Completer<void>();
 
     OtaUpdate()
@@ -144,6 +159,24 @@ class AppUpdateService {
         );
 
     return completer.future;
+  }
+
+  Future<bool> _canRequestPackageInstalls() async {
+    try {
+      final bool? result =
+          await _updateChannel.invokeMethod<bool>('canRequestPackageInstalls');
+      return result ?? false;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  Future<void> _openUnknownSourcesSettings() async {
+    try {
+      await _updateChannel.invokeMethod<void>('openUnknownSourcesSettings');
+    } catch (_) {
+      // If settings can't be opened, caller still gets a clear error message.
+    }
   }
 
   Future<Map<String, dynamic>> _fetchRemoteVersionConfig() async {
