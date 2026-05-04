@@ -180,6 +180,8 @@ def play_file(path, delete_after=False):
             for line in f:
                 if stop_playback:
                     stop_playback = False
+                    if delete_after:
+                        _delete_file(path)
                     log('playback onderbroken')
                     return
                 if music_len is None and "int musicLen" in line:
