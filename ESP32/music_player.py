@@ -16,6 +16,7 @@ SIMULATION_LOG_WAITS = False
 
 _current_txt_path = None
 _is_playing = False
+stop_playback = False
 
 _ROW_PATTERN = re.compile(r"\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\}")
 _LEN_PATTERN = re.compile(r"int\s+musicLen\s*=\s*(\d+)")
@@ -161,7 +162,7 @@ def stop_all(outputs=None):
 
 
 def play_file(path, delete_after=False):
-    global _is_playing, _current_txt_path
+    global _is_playing, _current_txt_path, stop_playback
 
     log("Muziek laden: {}".format(path))
     log("Mode: {}".format("STEPPER" if STEPPER_ENABLED else "SIMULATIE"))
@@ -177,6 +178,10 @@ def play_file(path, delete_after=False):
     try:
         with open(path, "r") as f:
             for line in f:
+                if stop_playback:
+                    stop_playback = False
+                    log('playback onderbroken')
+                    return
                 if music_len is None and "int musicLen" in line:
                     match = _LEN_PATTERN.search(line)
                     if match:
@@ -294,3 +299,7 @@ def start_playback_async(delay_ms=0):
             log("Async playback fout: {}".format(exc))
 
     _thread.start_new_thread(_runner, ())
+
+def interupt_playback():
+    global stop_playback
+    stop_playback = True

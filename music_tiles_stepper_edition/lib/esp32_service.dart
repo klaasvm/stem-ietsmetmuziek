@@ -225,6 +225,27 @@ class Esp32Service extends ChangeNotifier {
     }
   }
 
+  Future<void> stopPlayback() async {
+    final String? foundIp = await waitForIp();
+    if (foundIp == null) {
+      return;
+    }
+
+    final HttpClient client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 3);
+    try {
+      final HttpClientRequest request = await client
+          .getUrl(Uri.parse('http://$foundIp/stop_playback'))
+          .timeout(const Duration(seconds: 4));
+      _setClientHeaders(request);
+      await request.close().timeout(const Duration(seconds: 4));
+    } catch (_) {
+      // Stop playback failed silently
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   void _setClientHeaders(HttpClientRequest request) {
     request.headers.set('X-Client-Type', _clientType);
     request.headers.set('X-Client-Id', _clientId);

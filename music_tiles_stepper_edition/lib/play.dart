@@ -1410,6 +1410,7 @@ class _GamePageState extends State<GamePage> {
     }
 
     _stopAllAudio();
+    _esp32Service.stopPlayback().ignore();
 
     setState(() {
       _gameOver = true;
