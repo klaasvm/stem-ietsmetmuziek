@@ -11,12 +11,14 @@ except:
     import json
 
 UPLOAD_DIR = "uploads"
-CLIENT_TIMEOUT_SECONDS = 20
+CLIENT_TIMEOUT_SECONDS = 8
+CLIENT_PRUNE_INTERVAL_SECONDS = 2
 ALLOWED_CLIENT_TYPES = ("mobile", "computer")
 CLIENT_SLOTS = {
     "mobile": {"id": None, "last_seen": 0},
     "computer": {"id": None, "last_seen": 0},
 }
+_CLIENT_PRUNER_STARTED = False
 
 def log(message):
     try:
@@ -51,6 +53,29 @@ def _release_expired_slots():
             log("Client slot vrijgegeven (timeout): {} {}".format(slot_type, slot["id"]))
             slot["id"] = None
             slot["last_seen"] = 0
+
+
+def _slot_pruner_loop():
+    while True:
+        try:
+            _release_expired_slots()
+        except Exception as exc:
+            log("Slot pruner fout: {}".format(exc))
+        time.sleep(CLIENT_PRUNE_INTERVAL_SECONDS)
+
+
+def _start_slot_pruner():
+    global _CLIENT_PRUNER_STARTED
+    if _CLIENT_PRUNER_STARTED:
+        return
+
+    try:
+        import _thread
+        _thread.start_new_thread(_slot_pruner_loop, ())
+        _CLIENT_PRUNER_STARTED = True
+        log("Client slot pruner gestart")
+    except Exception as exc:
+        log("Client slot pruner niet gestart: {}".format(exc))
 
 
 def _register_client(headers, client_addr):
@@ -112,6 +137,8 @@ def get_request_path(request_text):
     return parts[1]
 
 def start_server(port=80):
+    _start_slot_pruner()
+
     try:
         import os
         os.mkdir(UPLOAD_DIR)

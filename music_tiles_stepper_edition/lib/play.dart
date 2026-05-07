@@ -10,9 +10,52 @@ import 'package:flutter_midi/flutter_midi.dart';
 
 import 'dev.dart' as dev;
 import 'esp32_service.dart';
-import 'polyphony_limit_page.dart';
 
 enum PlayIntent { game, music }
+
+class PolyphonyLimitPage extends StatelessWidget {
+  const PolyphonyLimitPage({
+    super.key,
+    required this.fileName,
+    required this.maxSimultaneousNotes,
+  });
+
+  final String fileName;
+  final int maxSimultaneousNotes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Song Niet Toegelaten')),
+      body: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text(
+              'Deze MIDI gebruikt te veel noten tegelijk voor de game-modus.',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 12),
+            Text('Bestand: $fileName'),
+            Text('Max tegelijk gedetecteerd: $maxSimultaneousNotes'),
+            const SizedBox(height: 8),
+            const Text('Toegelaten maximum in game-modus is 5 noten tegelijk.'),
+            const Spacer(),
+            FilledButton.icon(
+              onPressed: () => Navigator.of(context).pop(),
+              icon: const Icon(Icons.arrow_back),
+              label: const Text('Terug'),
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(52),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class GitHubMidiSong {
   GitHubMidiSong({required this.name, required this.path});

@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_midi/flutter_midi.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
+import 'editor.dart';
 import 'esp32_service.dart';
 
 class DevPage extends StatefulWidget {
@@ -27,6 +28,7 @@ class _DevPageState extends State<DevPage> {
   static const String _githubRepo = 'stem-ietsmetmuziek';
   static const String _githubBranch = 'main';
   static const String _githubMusicFolder = 'music';
+  static const int _editorMaxSimultaneousNotes = 5;
 
   final FlutterMidi _flutterMidi = FlutterMidi();
   final Esp32Service _esp32Service = Esp32Service.instance;
@@ -39,10 +41,12 @@ class _DevPageState extends State<DevPage> {
   String _hexDisplay = '';
   String _statusMessage = 'Soundfont laden...';
   bool _soundFontReady = false;
+  Future<void>? _soundFontLoadFuture;
   bool _isPlaying = false;
   bool _showDebugPanel = true;
   int _playbackSession = 0;
   final List<String> _debugLog = <String>[];
+  bool _isDisposing = false;
   Timer? _playheadTimer;
   int _playStartEpochMicros = 0;
   int _playTotalDurationMicros = 0;
@@ -51,15 +55,25 @@ class _DevPageState extends State<DevPage> {
   bool _githubSongsLoading = false;
   String _appVersionLabel = 'Versie laden...';
   bool _isUploadingToEsp32 = false;
+  bool _isExportingMidi = false;
 
   @override
   void initState() {
     super.initState();
     _esp32Service.startBackgroundLookup();
+    _esp32Service.addListener(_onEsp32ServiceChanged);
     _logDebug('App gestart op ${Platform.operatingSystem}');
     _loadAppVersion();
-    _loadSoundFont();
+    // Defer loading the large soundfont until playback is requested to avoid
+    // OutOfMemoryError on devices with limited heap.
+    // _loadSoundFont();
     _loadGitHubSongCatalog();
+  }
+
+  Future<void> ensureSoundFontLoaded() async {
+    if (_soundFontReady) return;
+    final Future<void> inFlight = _soundFontLoadFuture ??= _loadSoundFont();
+    await inFlight;
   }
 
   Future<void> _uploadSelectedFileToEsp32() async {
@@ -161,10 +175,17 @@ class _DevPageState extends State<DevPage> {
 
   @override
   void dispose() {
+    _isDisposing = true;
     _logDebug('Dispose gestart; playback stop wordt uitgevoerd');
     _stopPlayback();
     _playheadTimer?.cancel();
+    _esp32Service.removeListener(_onEsp32ServiceChanged);
     super.dispose();
+  }
+
+  void _onEsp32ServiceChanged() {
+    if (_isDisposing || !mounted) return;
+    setState(() {});
   }
 
   void _logDebug(
@@ -185,7 +206,7 @@ class _DevPageState extends State<DevPage> {
       debugPrint(stackTrace.toString());
     }
 
-    if (!mounted) {
+    if (_isDisposing || !mounted) {
       return;
     }
 
@@ -260,6 +281,10 @@ class _DevPageState extends State<DevPage> {
       setState(() {
         _statusMessage = 'Soundfont laden mislukt: $error';
       });
+    } finally {
+      if (!_soundFontReady) {
+        _soundFontLoadFuture = null;
+      }
     }
   }
 
@@ -557,11 +582,221 @@ class _DevPageState extends State<DevPage> {
     }
   }
 
+  Future<ParsedMidiSong?> _ensureParsedSong() async {
+    final ParsedMidiSong? existing = _parsedSong;
+    if (existing != null) {
+      return existing;
+    }
+
+    final Uint8List? bytes = _fileData;
+    if (bytes == null) {
+      return null;
+    }
+
+    final ParsedMidiSong parsed = MidiParser.parse(bytes);
+    if (!mounted) {
+      return parsed;
+    }
+
+    setState(() {
+      _parsedSong = parsed;
+    });
+    return parsed;
+  }
+
+  Future<void> _openFixEditor() async {
+    final ParsedMidiSong? song = await _ensureParsedSong();
+    if (song == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kies eerst een MIDI-bestand.')),
+      );
+      return;
+    }
+
+    final MidiEditDraft draft = MidiEditDraft(
+      notes: song.notes
+          .asMap()
+          .entries
+          .map(
+            (MapEntry<int, MidiNoteEvent> entry) => MidiEditNote(
+              id: entry.key,
+              note: entry.value.note,
+              velocity: entry.value.velocity,
+              startMicros: entry.value.startMicros,
+              endMicros: entry.value.endMicros,
+            ),
+          )
+          .toList(),
+      totalDurationMicros: song.totalDurationMicros,
+      rawNoteCount: song.rawNoteCount,
+      tempoChangeCount: song.tempoChangeCount,
+      trackCount: song.trackCount,
+      format: song.format,
+      ticksPerQuarterNote: song.ticksPerQuarterNote,
+    );
+
+    final MidiEditResult? result = await Navigator.of(context)
+        .push<MidiEditResult>(
+          MaterialPageRoute<MidiEditResult>(
+            builder: (BuildContext context) => EditorPage(
+              fileName: _selectedFileName ?? 'Onbekend MIDI-bestand',
+              initialDraft: draft,
+              maxSimultaneousNotes: _editorMaxSimultaneousNotes,
+            ),
+          ),
+        );
+
+    if (result == null || !mounted) {
+      _logDebug('Fix editor geannuleerd');
+      return;
+    }
+
+    final List<MidiNoteEvent> updatedNotes = result.draft.notes
+        .map(
+          (MidiEditNote note) => MidiNoteEvent(
+            note: note.note,
+            velocity: note.velocity,
+            startMicros: note.startMicros,
+            endMicros: note.endMicros,
+          ),
+        )
+        .toList();
+
+    int maxSimultaneousNotes = 0;
+    final List<_NoteBoundary> boundaries = <_NoteBoundary>[];
+    for (final MidiNoteEvent note in updatedNotes) {
+      boundaries.add(_NoteBoundary(time: note.startMicros, delta: 1));
+      boundaries.add(_NoteBoundary(time: note.endMicros, delta: -1));
+    }
+    boundaries.sort((a, b) {
+      final int compareTime = a.time.compareTo(b.time);
+      if (compareTime != 0) {
+        return compareTime;
+      }
+      return a.delta.compareTo(b.delta);
+    });
+    int active = 0;
+    for (final _NoteBoundary boundary in boundaries) {
+      active += boundary.delta;
+      if (active > maxSimultaneousNotes) {
+        maxSimultaneousNotes = active;
+      }
+    }
+
+    setState(() {
+      _parsedSong = ParsedMidiSong(
+        notes: updatedNotes,
+        totalDurationMicros: result.draft.totalDurationMicros,
+        format: result.draft.format,
+        trackCount: result.draft.trackCount,
+        ticksPerQuarterNote: result.draft.ticksPerQuarterNote,
+        tempoChangeCount: result.draft.tempoChangeCount,
+        rawNoteCount: result.draft.rawNoteCount,
+        maxSimultaneousNotes: maxSimultaneousNotes,
+      );
+      _statusMessage =
+          'Fix toegepast: ${result.removedNoteCount} noten verwijderd, max nu $maxSimultaneousNotes';
+      _selectedSourceLabel = _selectedSourceLabel == null
+          ? 'Bewerkt in Fix'
+          : '$_selectedSourceLabel (Fix)';
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Fix opgeslagen. Verwijderd: ${result.removedNoteCount}. Max tegelijk nu: $maxSimultaneousNotes.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportEditedMidi() async {
+    if (_isExportingMidi) {
+      return;
+    }
+
+    final ParsedMidiSong? song = await _ensureParsedSong();
+    if (song == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Kies eerst een MIDI-bestand.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isExportingMidi = true;
+    });
+
+    try {
+      final Uint8List midiBytes = MidiFileWriter.fromParsedSong(song);
+      final String baseName = (_selectedFileName ?? 'edited_song.mid')
+          .replaceAll(RegExp(r'\.(mid|midi)$', caseSensitive: false), '');
+      final String suggestedName = '${baseName}_fixed.mid';
+
+      final String? outputPath = await FilePicker.saveFile(
+        dialogTitle: 'Sla aangepaste MIDI op',
+        fileName: suggestedName,
+        type: FileType.custom,
+        allowedExtensions: const <String>['mid'],
+        bytes: midiBytes,
+      );
+
+      if (outputPath == null) {
+        _logDebug('MIDI export geannuleerd door gebruiker');
+        return;
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _statusMessage =
+            'Aangepaste MIDI opgeslagen: ${outputPath.split(Platform.pathSeparator).last}';
+      });
+      _logDebug(
+        'MIDI export klaar: path=$outputPath, bytes=${midiBytes.length}',
+      );
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('MIDI opgeslagen op: $outputPath')),
+      );
+    } catch (error, stackTrace) {
+      _logDebug(
+        'MIDI export mislukt',
+        error: error,
+        stackTrace: stackTrace,
+        updateStatus: true,
+      );
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('MIDI export mislukt: $error')));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isExportingMidi = false;
+        });
+      }
+    }
+  }
+
   Future<void> _playSelectedMidi() async {
     _playbackSession += 1;
     final int session = _playbackSession;
     final Stopwatch stopwatch = Stopwatch()..start();
     _logDebug('Playback sessie $session gestart');
+
+    if (!_soundFontReady) {
+      _logDebug('Playback sessie $session wacht op soundfont laden', updateStatus: true);
+      if (mounted) {
+        setState(() {
+          _statusMessage = 'Soundfont laden...';
+        });
+      }
+      await ensureSoundFontLoaded();
+    }
 
     if (!_soundFontReady) {
       _logDebug(
@@ -880,6 +1115,28 @@ class _DevPageState extends State<DevPage> {
                             label: Text(_isPlaying ? 'Stop' : 'Afspelen'),
                           ),
                           FilledButton.icon(
+                            onPressed: _openFixEditor,
+                            icon: const Icon(Icons.auto_fix_high),
+                            label: const Text('Fix'),
+                          ),
+                          FilledButton.icon(
+                            onPressed: _isExportingMidi
+                                ? null
+                                : _exportEditedMidi,
+                            icon: _isExportingMidi
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.download),
+                            label: Text(
+                              _isExportingMidi ? 'Opslaan...' : 'Download MIDI',
+                            ),
+                          ),
+                          FilledButton.icon(
                             onPressed: _isUploadingToEsp32
                                 ? null
                                 : _uploadSelectedFileToEsp32,
@@ -954,6 +1211,8 @@ class _DevPageState extends State<DevPage> {
                         const SizedBox(height: 4),
                         Text('Importbron: $_selectedSourceLabel'),
                       ],
+                      const SizedBox(height: 12),
+                      _buildEsp32CacheCard(),
                     ],
                   ),
                 ),
@@ -1060,6 +1319,118 @@ class _DevPageState extends State<DevPage> {
       ),
     );
   }
+
+  Widget _buildEsp32CacheCard() {
+    final List<Esp32CacheEntry> cached = _esp32Service.cachedDevices;
+    return Card(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Gevonden ESP32 apparaten', style: TextStyle(fontWeight: FontWeight.bold)),
+                TextButton.icon(
+                  onPressed: () => _showAddManualEsp32Dialog(),
+                  icon: const Icon(Icons.add),
+                  label: const Text('Toevoegen'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (cached.isEmpty)
+              const Text('Geen apparaten in cache')
+            else
+              Column(
+                children: cached.map((entry) {
+                  return ListTile(
+                    title: Text(entry.ip),
+                    subtitle: Text('Laatste: ${entry.lastSeen.toLocal()} — ${entry.healthy ? 'OK' : 'onbekend'}'),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.check_circle_outline),
+                          tooltip: 'Gebruik als actieve ESP32',
+                          onPressed: () {
+                            _esp32Service.setManualIp(entry.ip);
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.edit),
+                          tooltip: 'Bewerken',
+                          onPressed: () => _showEditCachedIpDialog(entry.ip),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.delete),
+                          tooltip: 'Verwijderen',
+                          onPressed: () {
+                            _esp32Service.removeCachedIp(entry.ip);
+                          },
+                        ),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showAddManualEsp32Dialog() async {
+    final TextEditingController ctrl = TextEditingController();
+    final String? result = await showDialog<String>(
+      context: context,
+      builder: (BuildContext ctx) {
+        return AlertDialog(
+          title: const Text('Handmatige ESP32 toevoegen'),
+          content: TextField(
+            controller: ctrl,
+            decoration: const InputDecoration(hintText: 'IP adres, bijv. 192.168.1.42'),
+            keyboardType: TextInputType.number,
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(null), child: const Text('Annuleren')),
+            FilledButton(onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()), child: const Text('Toevoegen')),
+          ],
+        );
+      },
+    );
+
+    if (result == null || result.isEmpty) return;
+    await _esp32Service.addOrUpdateCachedIp(result);
+  }
+
+  Future<void> _showEditCachedIpDialog(String existingIp) async {
+    final TextEditingController ctrl = TextEditingController(text: existingIp);
+    final String? result = await showDialog<String>(
+      context: context,
+      builder: (BuildContext ctx) {
+        return AlertDialog(
+          title: const Text('Bewerk cached IP'),
+          content: TextField(
+            controller: ctrl,
+            decoration: const InputDecoration(hintText: 'IP adres'),
+            keyboardType: TextInputType.number,
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(ctx).pop(null), child: const Text('Annuleren')),
+            FilledButton(onPressed: () => Navigator.of(ctx).pop(ctrl.text.trim()), child: const Text('Opslaan')),
+          ],
+        );
+      },
+    );
+
+    if (result == null || result.isEmpty) return;
+    // remove old, add new
+    _esp32Service.removeCachedIp(existingIp);
+    await _esp32Service.addOrUpdateCachedIp(result);
+  }
 }
 
 class MidiNoteEvent {
@@ -1098,6 +1469,147 @@ class ParsedMidiSong {
   final int tempoChangeCount;
   final int rawNoteCount;
   final int maxSimultaneousNotes;
+}
+
+class MidiFileWriter {
+  static Uint8List fromParsedSong(ParsedMidiSong song) {
+    final int ticksPerQuarterNote = song.ticksPerQuarterNote <= 0
+        ? 480
+        : song.ticksPerQuarterNote;
+    const int microsPerQuarterNote = 500000;
+
+    final List<_MidiFileEvent> events = <_MidiFileEvent>[];
+    for (final MidiNoteEvent note in song.notes) {
+      final int midiNote = note.note.clamp(0, 127);
+      final int velocity = note.velocity.clamp(1, 127);
+      final int startTick = _microsToTicks(
+        note.startMicros,
+        ticksPerQuarterNote,
+        microsPerQuarterNote,
+      );
+      final int endTickRaw = _microsToTicks(
+        note.endMicros,
+        ticksPerQuarterNote,
+        microsPerQuarterNote,
+      );
+      final int endTick = endTickRaw <= startTick ? startTick + 1 : endTickRaw;
+
+      events.add(
+        _MidiFileEvent(
+          tick: startTick,
+          status: 0x90,
+          data1: midiNote,
+          data2: velocity,
+          isNoteOff: false,
+        ),
+      );
+      events.add(
+        _MidiFileEvent(
+          tick: endTick,
+          status: 0x80,
+          data1: midiNote,
+          data2: 0,
+          isNoteOff: true,
+        ),
+      );
+    }
+
+    events.sort((a, b) {
+      final int tickCompare = a.tick.compareTo(b.tick);
+      if (tickCompare != 0) {
+        return tickCompare;
+      }
+      if (a.isNoteOff != b.isNoteOff) {
+        return a.isNoteOff ? -1 : 1;
+      }
+      return a.data1.compareTo(b.data1);
+    });
+
+    final List<int> trackData = <int>[];
+    int previousTick = 0;
+
+    trackData.addAll(<int>[0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20]);
+
+    for (final _MidiFileEvent event in events) {
+      final int delta = event.tick - previousTick;
+      trackData.addAll(_encodeVarInt(delta));
+      trackData.add(event.status);
+      trackData.add(event.data1);
+      trackData.add(event.data2);
+      previousTick = event.tick;
+    }
+
+    trackData.addAll(<int>[0x00, 0xFF, 0x2F, 0x00]);
+
+    final BytesBuilder output = BytesBuilder();
+    output.add(<int>[0x4D, 0x54, 0x68, 0x64]);
+    output.add(_encodeUint32(6));
+    output.add(_encodeUint16(0));
+    output.add(_encodeUint16(1));
+    output.add(_encodeUint16(ticksPerQuarterNote));
+    output.add(<int>[0x4D, 0x54, 0x72, 0x6B]);
+    output.add(_encodeUint32(trackData.length));
+    output.add(trackData);
+    return output.takeBytes();
+  }
+
+  static int _microsToTicks(
+    int micros,
+    int ticksPerQuarterNote,
+    int microsPerQuarterNote,
+  ) {
+    if (micros <= 0) {
+      return 0;
+    }
+    return (micros * ticksPerQuarterNote) ~/ microsPerQuarterNote;
+  }
+
+  static List<int> _encodeVarInt(int value) {
+    int buffer = value & 0x7F;
+    final List<int> encoded = <int>[];
+    while ((value >>= 7) > 0) {
+      buffer <<= 8;
+      buffer |= ((value & 0x7F) | 0x80);
+    }
+    while (true) {
+      encoded.add(buffer & 0xFF);
+      if ((buffer & 0x80) != 0) {
+        buffer >>= 8;
+      } else {
+        break;
+      }
+    }
+    return encoded;
+  }
+
+  static List<int> _encodeUint16(int value) {
+    return <int>[(value >> 8) & 0xFF, value & 0xFF];
+  }
+
+  static List<int> _encodeUint32(int value) {
+    return <int>[
+      (value >> 24) & 0xFF,
+      (value >> 16) & 0xFF,
+      (value >> 8) & 0xFF,
+      value & 0xFF,
+    ];
+  }
+}
+
+class _MidiFileEvent {
+  _MidiFileEvent({
+    required this.tick,
+    required this.status,
+    required this.data1,
+    required this.data2,
+    required this.isNoteOff,
+  });
+
+  final int tick;
+  final int status;
+  final int data1;
+  final int data2;
+  final bool isNoteOff;
 }
 
 class MidiParser {

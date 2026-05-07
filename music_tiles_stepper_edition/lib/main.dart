@@ -134,6 +134,75 @@ class _StartPageState extends State<StartPage> {
     });
   }
 
+  bool _isValidIpv4(String value) {
+    final RegExp pattern = RegExp(
+      r'^(25[0-5]|2[0-4]\d|1?\d?\d)\.(25[0-5]|2[0-4]\d|1?\d?\d)\.(25[0-5]|2[0-4]\d|1?\d?\d)\.(25[0-5]|2[0-4]\d|1?\d?\d)$',
+    );
+    return pattern.hasMatch(value.trim());
+  }
+
+  Future<void> _enterManualEsp32Ip() async {
+    final TextEditingController controller = TextEditingController(
+      text: _esp32Ip ?? '',
+    );
+
+    final String? entered = await showDialog<String>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('ESP32 handmatig invoeren'),
+          content: TextField(
+            controller: controller,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: 'IP-adres',
+              hintText: '192.168.1.123',
+            ),
+            autofocus: true,
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Annuleren'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+              child: const Text('Gebruik IP'),
+            ),
+          ],
+        );
+      },
+    );
+
+    controller.dispose();
+
+    if (entered == null || !mounted) {
+      return;
+    }
+
+    final String trimmed = entered.trim();
+    if (!_isValidIpv4(trimmed)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Geef een geldig IPv4-adres in.')),
+      );
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _esp32Service.setManualIp(trimmed);
+      setState(() {
+        _esp32LookupRunning = false;
+        _esp32LookupSucceeded = true;
+        _esp32Status = 'ESP32 handmatig ingesteld op $trimmed';
+        _esp32RawData = 'Handmatige invoer: $trimmed';
+        _esp32Ip = trimmed;
+      });
+    });
+  }
+
   Future<void> _startEsp32Lookup() async {
     if (!mounted) {
       return;
@@ -483,6 +552,20 @@ class _StartPageState extends State<StartPage> {
                   minimumSize: const Size(0, 30),
                 ),
                 child: const Text('Opnieuw'),
+              ),
+              const SizedBox(width: 4),
+              IconButton(
+                onPressed: _enterManualEsp32Ip,
+                tooltip: 'Handmatig IP invoeren',
+                visualDensity: VisualDensity.compact,
+                iconSize: 18,
+                color: Colors.white,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(
+                  width: 30,
+                  height: 30,
+                ),
+                icon: const Icon(Icons.edit_location_alt_outlined),
               ),
             ],
           ),

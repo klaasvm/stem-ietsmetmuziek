@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class Esp32UploadResult {
   const Esp32UploadResult({
@@ -19,6 +20,36 @@ class Esp32UploadResult {
   final String serverMessage;
 }
 
+class Esp32CacheEntry {
+  Esp32CacheEntry({
+    required this.ip,
+    required this.rawData,
+    required this.lastSeen,
+    required this.healthy,
+  });
+
+  final String ip;
+  final String rawData;
+  final DateTime lastSeen;
+  final bool healthy;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'ip': ip,
+        'raw': rawData,
+        'lastSeen': lastSeen.toIso8601String(),
+        'healthy': healthy,
+      };
+
+  factory Esp32CacheEntry.fromJson(Map<String, dynamic> json) {
+    final String ip = json['ip']?.toString() ?? '';
+    final String raw = json['raw']?.toString() ?? '';
+    final String lastSeenStr = json['lastSeen']?.toString() ?? '';
+    final bool healthy = json['healthy'] == true;
+    final DateTime lastSeen = DateTime.tryParse(lastSeenStr) ?? DateTime.now();
+    return Esp32CacheEntry(ip: ip, rawData: raw, lastSeen: lastSeen, healthy: healthy);
+  }
+}
+
 class Esp32Service extends ChangeNotifier {
   Esp32Service._();
 
@@ -31,10 +62,12 @@ class Esp32Service extends ChangeNotifier {
   String _status = 'ESP32 zoeken op netwerk...';
   String _rawData = '';
   String? _ip;
+  final Map<String, Esp32CacheEntry> _cache = <String, Esp32CacheEntry>{};
   bool _started = false;
   bool _lookupInProgress = false;
   bool _healthCheckInProgress = false;
   Timer? _retryTimer;
+  static const String _prefsKeyCache = 'esp32_cache_v1';
 
   bool get lookupRunning => _lookupRunning;
   bool? get lookupSucceeded => _lookupSucceeded;
@@ -42,16 +75,68 @@ class Esp32Service extends ChangeNotifier {
   String get rawData => _rawData;
   String? get ip => _ip;
 
+  /// Returns the cached devices as a read-only list.
+  List<Esp32CacheEntry> get cachedDevices => _cache.values.toList(growable: false);
+
+  /// Manually add or update a cached device. Attempts to fetch raw data and
+  /// confirm token; if successful the entry will be marked healthy.
+  Future<void> addOrUpdateCachedIp(String ip) async {
+    final DateTime seen = DateTime.now();
+    String raw = '';
+    bool healthy = false;
+    try {
+      final String? fetched = await _fetchRawFromEsp32Endpoints(ip);
+      if (fetched != null) {
+        raw = fetched;
+      }
+      healthy = await _hasExpectedConfirmToken(ip);
+    } catch (_) {
+      // ignore
+    }
+
+    _cache[ip] = Esp32CacheEntry(ip: ip, rawData: raw, lastSeen: seen, healthy: healthy);
+    _saveCacheToPrefs();
+    notifyListeners();
+  }
+
+  void removeCachedIp(String ip) {
+    _cache.remove(ip);
+    _saveCacheToPrefs();
+    notifyListeners();
+  }
+
+  void clearCache() {
+    _cache.clear();
+    _saveCacheToPrefs();
+    notifyListeners();
+  }
+
+  void setManualIp(String ip) {
+    _ip = ip;
+    _lookupRunning = false;
+    _lookupSucceeded = true;
+    _status = 'ESP32 handmatig ingesteld op $ip';
+    _rawData = 'Handmatige invoer: $ip';
+    notifyListeners();
+  }
+
   void startBackgroundLookup() {
     if (_started) {
       return;
     }
 
     _started = true;
+    // Load previously saved cache (non-blocking).
+    _loadCacheFromPrefs();
     _runLookup();
-    _retryTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+    // Poll frequently to re-check cached IPs and health (2s interval).
+    _retryTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       if (_ip == null) {
-        _runLookup();
+        // try cached ips first (fast), then full discovery when none match
+        final bool found = await _tryCachedIps();
+        if (!found) {
+          _runLookup();
+        }
         return;
       }
       _checkConnectionHealth();
@@ -66,6 +151,31 @@ class Esp32Service extends ChangeNotifier {
     _rawData = '';
     notifyListeners();
     await _runLookup();
+  }
+
+  /// Try cached IPs quickly; returns true if a cached ip was confirmed and
+  /// selected.
+  Future<bool> _tryCachedIps() async {
+    if (_cache.isEmpty) return false;
+    for (final String candidate in _cache.keys) {
+      try {
+        if (await _looksLikeEsp32(candidate)) {
+          final String raw = await _fetchEsp32Raw(candidate);
+          _ip = candidate;
+          _lookupRunning = false;
+          _lookupSucceeded = true;
+          _status = 'ESP32 gevonden op $candidate (cache)';
+          _rawData = raw;
+          _cache[candidate] = Esp32CacheEntry(ip: candidate, rawData: raw, lastSeen: DateTime.now(), healthy: true);
+          _saveCacheToPrefs();
+          notifyListeners();
+          return true;
+        }
+      } catch (_) {
+        // ignore and try next
+      }
+    }
+    return false;
   }
 
   Future<String?> waitForIp({
@@ -230,6 +340,42 @@ class Esp32Service extends ChangeNotifier {
     request.headers.set('X-Client-Id', _clientId);
   }
 
+  Future<void> _saveCacheToPrefs() async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final List<Map<String, dynamic>> list = _cache.values.map((e) => e.toJson()).toList();
+      await prefs.setString(_prefsKeyCache, jsonEncode(list));
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  Future<void> _loadCacheFromPrefs() async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final String? raw = prefs.getString(_prefsKeyCache);
+      if (raw == null) return;
+      final dynamic decoded = jsonDecode(raw);
+      if (decoded is! List) return;
+      for (final dynamic item in decoded) {
+        if (item is Map) {
+          final Map<String, dynamic> map = Map<String, dynamic>.from(item);
+          try {
+            final Esp32CacheEntry entry = Esp32CacheEntry.fromJson(map);
+            _cache[entry.ip] = entry;
+          } catch (_) {
+            // ignore malformed entries
+          }
+        }
+      }
+      if (_cache.isNotEmpty) {
+        notifyListeners();
+      }
+    } catch (_) {
+      // ignore
+    }
+  }
+
   Future<void> _runLookup() async {
     if (_lookupInProgress || _ip != null) {
       return;
@@ -251,9 +397,11 @@ class Esp32Service extends ChangeNotifier {
         notifyListeners();
         return;
       }
-
       final String raw = await _fetchEsp32Raw(discoveredIp);
       _ip = discoveredIp;
+      // update cache
+      _cache[discoveredIp] = Esp32CacheEntry(ip: discoveredIp, rawData: raw, lastSeen: DateTime.now(), healthy: true);
+      _saveCacheToPrefs();
       _lookupRunning = false;
       _lookupSucceeded = true;
       _status = 'ESP32 gevonden op $discoveredIp';
