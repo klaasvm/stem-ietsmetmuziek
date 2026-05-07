@@ -265,6 +265,17 @@ def start_server(port=80):
                 except Exception as exc:
                     send_error(conn, 409, "Conflict", "Kon playback niet starten: {}".format(exc))
                 continue
+            if path == "/stop_playback" and method == "GET":
+                music_player.interupt_playback()
+                try:
+                    send_response(
+                        conn,
+                        json.dumps({"stopped": True}),
+                        content_type="application/json; charset=utf-8",
+                    )
+                except Exception as exc:
+                    log("Fout bij stoppen response: {}".format(exc))
+                continue
 
             name = params.get("name", "")
             file_id = params.get("id", "")

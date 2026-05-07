@@ -1453,6 +1453,7 @@ class _GamePageState extends State<GamePage> {
     }
 
     _stopAllAudio();
+    _esp32Service.stopPlayback().ignore();
 
     setState(() {
       _gameOver = true;
@@ -1527,7 +1528,10 @@ class _GamePageState extends State<GamePage> {
                       child: Row(
                         children: <Widget>[
                           GestureDetector(
-                            onTap: () => Navigator.of(context).pop(),
+                            onTap: () {
+                              _esp32Service.stopPlayback().ignore();
+                              Navigator.of(context).pop();
+                            },
                             child: Container(
                               width: 40,
                               height: 40,
