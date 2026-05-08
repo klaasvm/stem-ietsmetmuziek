@@ -8,9 +8,13 @@ from machine import PWM, Pin
 UPLOAD_DIR = "uploads"
 NUM_SPEAKERS = 5
 SPEAKER_PINS = (13, 27, 26, 25, 33)
+STEP_PIN = 13
+DIR_PIN = 12
+STEP_PULSE_US = 100
+STEP_MIN_PERIOD_US = 200
 INITIAL_US_PER_BEAT = 500000
 TICKS_PER_BEAT = 480
-STEPPER_ENABLED = False
+STEPPER_ENABLED = True
 SIMULATION_TIME_SCALE = 1.0
 SIMULATION_LOG_WAITS = False
 
@@ -47,14 +51,41 @@ def _pwm_off(pwm):
 
 
 def _create_pwm_outputs():
-    if not STEPPER_ENABLED:
-        return [None] * NUM_SPEAKERS
+    if STEPPER_ENABLED:
+        return None
 
     outputs = []
     for pin in SPEAKER_PINS:
         pwm = PWM(Pin(pin), freq=100, duty=0)
         outputs.append(pwm)
     return outputs
+
+
+class StepperDriver:
+    def __init__(self, step_pin, dir_pin):
+        self.step_pin = Pin(step_pin, Pin.OUT)
+        self.dir_pin = Pin(dir_pin, Pin.OUT)
+        self.step_pin.value(0)
+        self.dir_pin.value(1)
+
+    def set_direction(self, forward=True):
+        self.dir_pin.value(1 if forward else 0)
+
+    def step_pulse(self, pulse_us, gap_us):
+        self.step_pin.value(1)
+        time.sleep_us(pulse_us)
+        self.step_pin.value(0)
+        if gap_us > 0:
+            time.sleep_us(gap_us)
+
+    def deinit(self):
+        self.step_pin.value(0)
+        self.dir_pin.value(0)
+        try:
+            self.step_pin.deinit()
+            self.dir_pin.deinit()
+        except Exception:
+            pass
 
 
 def _freq_to_note_name(freq):
@@ -69,22 +100,29 @@ def _freq_to_note_name(freq):
 
 
 def _set_channel_off(outputs, channel):
-    if STEPPER_ENABLED:
+    if not STEPPER_ENABLED and outputs is not None:
         _pwm_off(outputs[channel])
 
 
 def _set_channel_freq(outputs, channel, freq):
-    if STEPPER_ENABLED:
+    if not STEPPER_ENABLED and outputs is not None:
         outputs[channel].freq(freq)
         _pwm_on(outputs[channel])
 
 
-def _delay_us(delay_us):
+def _delay_us(delay_us, stepper=None, current_freq=0):
     if delay_us <= 0:
         return
 
-    if STEPPER_ENABLED:
-        time.sleep_us(delay_us)
+    if STEPPER_ENABLED and stepper is not None and current_freq > 0:
+        period = max(STEP_MIN_PERIOD_US, int(1000000 // current_freq))
+        pulse_us = min(STEP_PULSE_US, period // 2)
+        gap_us = period - pulse_us
+        start = time.ticks_us()
+        while time.ticks_diff(time.ticks_us(), start) < delay_us:
+            if stop_playback:
+                break
+            stepper.step_pulse(pulse_us, gap_us)
         return
 
     scaled = int(delay_us * SIMULATION_TIME_SCALE)
@@ -146,6 +184,9 @@ def playback_state():
 
 
 def stop_all(outputs=None):
+    if STEPPER_ENABLED:
+        return
+
     own_outputs = outputs is None
     if own_outputs:
         outputs = _create_pwm_outputs()
@@ -169,11 +210,17 @@ def play_file(path, delete_after=False):
     _current_txt_path = path
     _is_playing = True
     outputs = _create_pwm_outputs()
+    stepper = StepperDriver(STEP_PIN, DIR_PIN) if STEPPER_ENABLED else None
+    if stepper is not None:
+        stepper.set_direction(True)
+
     us_per_beat = INITIAL_US_PER_BEAT
     us_per_tick = us_per_beat // TICKS_PER_BEAT
     previous_row = None
     row_count = 0
     music_len = None
+    active_freqs = {}
+    current_freq = 0
 
     try:
         with open(path, "r") as f:
@@ -205,17 +252,21 @@ def play_file(path, delete_after=False):
                     if prev_channel == NUM_SPEAKERS + 1:
                         us_per_beat = prev_value
                         us_per_tick = max(1, us_per_beat // TICKS_PER_BEAT)
-                        if not STEPPER_ENABLED:
-                            bpm = 60000000 // us_per_beat if us_per_beat > 0 else 0
-                            log("TEMPO -> usPerBeat={} usPerTick={} BPM~{}".format(us_per_beat, us_per_tick, bpm))
+                        bpm = 60000000 // us_per_beat if us_per_beat > 0 else 0
+                        log("TEMPO -> usPerBeat={} usPerTick={} BPM~{}".format(us_per_beat, us_per_tick, bpm))
                     elif 0 <= prev_channel < NUM_SPEAKERS:
-                        if prev_value <= 0:
-                            _set_channel_off(outputs, prev_channel)
-                            if not STEPPER_ENABLED:
-                                log("CH{} OFF".format(prev_channel))
+                        if STEPPER_ENABLED:
+                            if prev_value <= 0:
+                                active_freqs.pop(prev_channel, None)
+                            else:
+                                active_freqs[prev_channel] = prev_value
+                            current_freq = max(active_freqs.values()) if active_freqs else 0
                         else:
-                            _set_channel_freq(outputs, prev_channel, prev_value)
-                            if not STEPPER_ENABLED:
+                            if prev_value <= 0:
+                                _set_channel_off(outputs, prev_channel)
+                                log("CH{} OFF".format(prev_channel))
+                            else:
+                                _set_channel_freq(outputs, prev_channel, prev_value)
                                 note_name = _freq_to_note_name(prev_value)
                                 period_us = 1000000 // prev_value if prev_value > 0 else 0
                                 log(
@@ -232,7 +283,7 @@ def play_file(path, delete_after=False):
                         delay_us = delay_ticks * us_per_tick
                         if not STEPPER_ENABLED and SIMULATION_LOG_WAITS:
                             log("WAIT ticks={} -> {}us (scaled x{})".format(delay_ticks, delay_us, SIMULATION_TIME_SCALE))
-                        _delay_us(delay_us)
+                        _delay_us(delay_us, stepper=stepper, current_freq=current_freq)
 
                 previous_row = current_row
                 row_count += 1
@@ -244,17 +295,21 @@ def play_file(path, delete_after=False):
             music_len = max(0, row_count - (NUM_SPEAKERS + 1))
         log("Rows={} musicLen={}".format(row_count, music_len))
 
-        for pwm in outputs:
-            if pwm is not None:
-                _pwm_off(pwm)
+        if not STEPPER_ENABLED and outputs is not None:
+            for pwm in outputs:
+                if pwm is not None:
+                    _pwm_off(pwm)
 
         log("Playback klaar")
     finally:
         _is_playing = False
         _current_txt_path = None
-        for pwm in outputs:
-            if pwm is not None:
-                pwm.deinit()
+        if stepper is not None:
+            stepper.deinit()
+        elif outputs is not None:
+            for pwm in outputs:
+                if pwm is not None:
+                    pwm.deinit()
 
     if delete_after:
         _delete_file(path)

@@ -255,6 +255,15 @@ def start_server(port=80):
                 if delay_ms > 10000:
                     delay_ms = 10000
 
+                state = music_player.playback_state()
+                if state.get("playing", False):
+                    send_error(conn, 409, "Conflict", "Playback al bezig")
+                    continue
+
+                if not music_player.has_pending_txt():
+                    send_error(conn, 404, "Not Found", "Geen txt-bestanden beschikbaar voor weergave")
+                    continue
+
                 try:
                     music_player.start_playback_async(delay_ms=delay_ms)
                     send_response(
