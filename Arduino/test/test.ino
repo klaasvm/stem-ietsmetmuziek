@@ -2,6 +2,7 @@
 const int STEP_PIN = 13;
 const int DIR_PIN  = 12;
 const int DELAY_US = 1500;
+const int DIRECTION = 1;
 
 bool motorLoopt = true; // De motor begint in de 'aan' stand
 
