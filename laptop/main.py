@@ -1,4 +1,5 @@
 import argparse
+import re
 import struct
 import sys
 import time
@@ -267,6 +268,16 @@ def resolve_output_dir(output_arg):
 	return script_dir / output_path
 
 
+def prompt_for_ip():
+	while True:
+		value = input("Voer ESP32 IP in (of druk op Enter voor automatische detectie): ").strip()
+		if not value:
+			return None
+		if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", value):
+			return value
+		print("Ongeldig IP-adres, probeer het opnieuw.")
+
+
 def ensure_output_dir(path):
 	path.mkdir(parents=True, exist_ok=True)
 
@@ -360,7 +371,11 @@ def main():
 	ensure_output_dir(output_dir)
 	receive.log("Download map: {}".format(output_dir))
 
-	ip = receive.connect_esp32(preferred_ip=args.ip, retry_delay=args.reconnect_seconds)
+	preferred_ip = args.ip
+	if preferred_ip is None:
+		preferred_ip = prompt_for_ip()
+
+	ip = receive.connect_esp32(preferred_ip=preferred_ip, retry_delay=args.reconnect_seconds)
 
 	while True:
 		try:
