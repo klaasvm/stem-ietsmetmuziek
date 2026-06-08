@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'app_update_service.dart';
 import 'dev.dart';
 import 'esp32_service.dart';
+import 'laptop_service.dart';
 import 'play.dart';
 
 void main() {
@@ -38,6 +39,7 @@ class StartPage extends StatefulWidget {
 class _StartPageState extends State<StartPage> {
   final AppUpdateService _appUpdateService = AppUpdateService();
   final Esp32Service _esp32Service = Esp32Service.instance;
+  final LaptopService _laptopService = LaptopService.instance;
   AppUpdateInfo? _requiredUpdate;
   bool _updateCheckDone = false;
   bool _isInstallingUpdate = false;
@@ -47,8 +49,73 @@ class _StartPageState extends State<StartPage> {
   String _esp32Status = 'ESP32 zoeken op netwerk...';
   String _esp32RawData = '';
   String? _esp32Ip;
+  String? _selectedEndpoint;
+  String _laptopStatus = 'Laptop niet geconfigureerd';
+  bool _laptopConfigured = false;
 
   Future<void> _openPlayModeChooser() async {
+    // First choose endpoint
+    final String? endpoint = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (BuildContext context) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const Text(
+                  'Kies endpoint',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: () => Navigator.of(context).pop('esp32'),
+                  icon: const Icon(Icons.router),
+                  label: const Text('ESP32'),
+                  style: FilledButton.styleFrom(
+                    minimumSize: const Size.fromHeight(52),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                if (_laptopConfigured)
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).pop('laptop'),
+                    icon: const Icon(Icons.computer),
+                    label: Text('Laptop (${_laptopService.laptopIp})'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(52),
+                    ),
+                  )
+                else
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).pop('laptop-config'),
+                    icon: const Icon(Icons.computer),
+                    label: const Text('Laptop configureren'),
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size.fromHeight(52),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (endpoint == null || !mounted) {
+      return;
+    }
+
+    if (endpoint == 'laptop-config') {
+      await _configureLaptopEndpoint();
+      return;
+    }
+
+    _selectedEndpoint = endpoint;
+
+    // Then choose play mode
     final PlayIntent? intent = await showModalBottomSheet<PlayIntent>(
       context: context,
       showDragHandle: true,
@@ -65,11 +132,18 @@ class _StartPageState extends State<StartPage> {
                 ),
                 const SizedBox(height: 12),
                 FilledButton.icon(
-                  onPressed: () => Navigator.of(context).pop(PlayIntent.game),
-                  icon: const Icon(Icons.sports_esports),
-                  label: const Text('Game spelen'),
+                  // Laat de knop werken als de ESP32 óf de laptop succesvol is geconfigureerd
+                  onPressed: (_esp32LookupSucceeded == true || _laptopConfigured)
+                      ? _openPlayModeChooser
+                      : null,
+                  icon: const Icon(Icons.play_arrow),
+                  label: Text(
+                    (_esp32LookupSucceeded == true || _laptopConfigured)
+                        ? 'Play'
+                        : 'Play (wacht op connectie)', // Tekst iets algemener gemaakt
+                  ),
                   style: FilledButton.styleFrom(
-                    minimumSize: const Size.fromHeight(52),
+                    minimumSize: const Size.fromHeight(56),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -92,9 +166,99 @@ class _StartPageState extends State<StartPage> {
       return;
     }
 
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute<void>(builder: (_) => PlayPage(intent: intent)));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PlayPage(
+          intent: intent,
+          selectedEndpoint: _selectedEndpoint ?? 'esp32',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _configureLaptopEndpoint() async {
+    final TextEditingController ipController = TextEditingController(
+      text: _laptopService.laptopIp ?? '',
+    );
+    final TextEditingController portController = TextEditingController(
+      text: _laptopService.laptopPort.toString(),
+    );
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Laptop configureren'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              TextField(
+                controller: ipController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'IP-adres',
+                  hintText: '192.168.1.100',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: portController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Poort',
+                  hintText: '5000',
+                ),
+              ),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Annuleren'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Opslaan'),
+            ),
+          ],
+        );
+      },
+    );
+
+    // Do not dispose controllers here; avoid disposing while the widget tree
+    // may still reference them during dialog dismissal.
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    final String ip = ipController.text.trim();
+    final int port = int.tryParse(portController.text.trim()) ?? 5000;
+
+    if (ip.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('IP-adres is verplicht.')),
+      );
+      return;
+    }
+
+    if (!_isValidIpv4(ip)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Geef een geldig IPv4-adres in.')),
+      );
+      return;
+    }
+
+    await _laptopService.setLaptopIp(ip, port: port);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Laptop ingesteld op $ip:$port')),
+    );
+
+    setState(() {
+      _laptopConfigured = true;
+      _laptopStatus = 'Laptop ingesteld op $ip:$port';
+    });
   }
 
   @override
@@ -103,6 +267,17 @@ class _StartPageState extends State<StartPage> {
     _esp32Service.addListener(_onEsp32StateChanged);
     _onEsp32StateChanged();
     _esp32Service.startBackgroundLookup();
+    
+    // Load laptop config
+    _laptopService.loadConfig().then((_) {
+      if (mounted) {
+        setState(() {
+          _laptopConfigured = _laptopService.isConfigured;
+          _laptopStatus = _laptopService.status;
+        });
+      }
+    });
+    
     () async {
       try {
         await GitHubSongCatalog.load();

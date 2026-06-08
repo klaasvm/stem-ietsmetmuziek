@@ -11,6 +11,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import 'editor.dart';
 import 'esp32_service.dart';
+import 'laptop_service.dart';
 
 class DevPage extends StatefulWidget {
   const DevPage({super.key, required this.title});
@@ -32,6 +33,7 @@ class _DevPageState extends State<DevPage> {
 
   final FlutterMidi _flutterMidi = FlutterMidi();
   final Esp32Service _esp32Service = Esp32Service.instance;
+  final LaptopService _laptopService = LaptopService.instance;
   final List<Timer> _activeTimers = <Timer>[];
 
   String? _selectedFileName;
@@ -62,6 +64,10 @@ class _DevPageState extends State<DevPage> {
     super.initState();
     _esp32Service.startBackgroundLookup();
     _esp32Service.addListener(_onEsp32ServiceChanged);
+    _laptopService.loadConfig().then((_) {
+      if (!mounted) return;
+      setState(() {});
+    });
     _logDebug('App gestart op ${Platform.operatingSystem}');
     _loadAppVersion();
     // Defer loading the large soundfont until playback is requested to avoid
@@ -430,6 +436,81 @@ class _DevPageState extends State<DevPage> {
     }
 
     await _importGitHubSong(selectedSong);
+  }
+
+  Future<void> _openConfigureLaptop() async {
+    final TextEditingController ipController = TextEditingController(
+      text: _laptopService.laptopIp ?? '',
+    );
+    final TextEditingController portController = TextEditingController(
+      text: _laptopService.laptopPort.toString(),
+    );
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Laptop configureren'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              TextField(
+                controller: ipController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'IP-adres',
+                  hintText: '192.168.1.100',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: portController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'Poort',
+                  hintText: '5000',
+                ),
+              ),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Annuleren'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Opslaan'),
+            ),
+          ],
+        );
+      },
+    );
+
+    // Do not dispose controllers here; letting the dialog/widget lifecycle handle it prevents
+    // "used after disposed" races when the framework rebuilds during dialog dismissal.
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    final String ip = ipController.text.trim();
+    final int port = int.tryParse(portController.text.trim()) ?? 5000;
+
+    if (ip.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('IP-adres is verplicht.')),
+      );
+      return;
+    }
+
+    await _laptopService.setLaptopIp(ip, port: port);
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Laptop ingesteld op $ip:$port')),
+    );
+
+    setState(() {});
   }
 
   Future<void> _importGitHubSong(GitHubMidiSong song) async {
@@ -1170,6 +1251,15 @@ class _DevPageState extends State<DevPage> {
                               _showDebugPanel
                                   ? 'Debug verbergen'
                                   : 'Debug tonen',
+                            ),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: _openConfigureLaptop,
+                            icon: const Icon(Icons.computer),
+                            label: Text(
+                              _laptopService.laptopIp == null
+                                  ? 'Laptop instellen'
+                                  : 'Laptop: ${_laptopService.laptopIp}:${_laptopService.laptopPort}',
                             ),
                           ),
                           OutlinedButton.icon(

@@ -10,6 +10,7 @@ import 'package:flutter_midi/flutter_midi.dart';
 
 import 'dev.dart' as dev;
 import 'esp32_service.dart';
+import 'laptop_service.dart';
 
 enum PlayIntent { game, music }
 
@@ -265,9 +266,14 @@ class GameDifficulty {
 }
 
 class PlayPage extends StatefulWidget {
-  const PlayPage({super.key, required this.intent});
+  const PlayPage({
+    super.key,
+    required this.intent,
+    this.selectedEndpoint = 'esp32',
+  });
 
   final PlayIntent intent;
+  final String selectedEndpoint;
 
   @override
   State<PlayPage> createState() => _PlayPageState();
@@ -276,6 +282,7 @@ class PlayPage extends StatefulWidget {
 class _PlayPageState extends State<PlayPage> {
   late Future<List<GitHubMidiSong>> _songsFuture;
   final Esp32Service _esp32Service = Esp32Service.instance;
+  final LaptopService _laptopService = LaptopService.instance;
   bool _prefetchStarted = false;
   bool _busy = false;
 
@@ -290,9 +297,11 @@ class _PlayPageState extends State<PlayPage> {
   }
 
   String get _intentDescription {
+    final String endpoint =
+        widget.selectedEndpoint == 'laptop' ? 'Laptop' : 'ESP32';
     return widget.intent == PlayIntent.game
-        ? 'Kies een song, upload naar ESP32 en start daarna de game.'
-        : 'Kies een song of upload je eigen MIDI om gesynchroniseerd op ESP32 af te spelen.';
+        ? 'Kies een song, upload naar $endpoint en start daarna de game.'
+        : 'Kies een song of upload je eigen MIDI om gesynchroniseerd op $endpoint af te spelen.';
   }
 
   void _openGame({
@@ -505,7 +514,15 @@ class _PlayPageState extends State<PlayPage> {
         return;
       }
 
-      await _esp32Service.uploadFile(data: bytes, fileName: fileName);
+      // Upload to selected endpoint
+      if (widget.selectedEndpoint == 'laptop') {
+        await _laptopService.uploadMidiFile(
+          data: bytes,
+          fileName: fileName,
+        );
+      } else {
+        await _esp32Service.uploadFile(data: bytes, fileName: fileName);
+      }
 
       if (widget.intent == PlayIntent.music) {
         await _startMusicModePlayback();
@@ -535,6 +552,16 @@ class _PlayPageState extends State<PlayPage> {
 
   Future<void> _startMusicModePlayback() async {
     if (!mounted) {
+      return;
+    }
+
+    // Laptop endpoint doesn't need playback sync
+    if (widget.selectedEndpoint == 'laptop') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Bestand verzonden naar laptop. Afspelen start op Arduino.'),
+        ),
+      );
       return;
     }
 
