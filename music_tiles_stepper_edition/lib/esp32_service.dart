@@ -153,6 +153,27 @@ class Esp32Service extends ChangeNotifier {
     await _runLookup();
   }
 
+  /// Public helper: find an ESP32 and return true when one was found.
+  Future<bool> findEsp32() async {
+    startBackgroundLookup();
+
+    // Try cached entries first (fast path).
+    try {
+      await _loadCacheFromPrefs();
+    } catch (_) {
+      // ignore
+    }
+
+    final bool fromCache = await _tryCachedIps();
+    if (fromCache) {
+      return true;
+    }
+
+    // Full discovery as fallback.
+    await _runLookup();
+    return _lookupSucceeded == true || _ip != null;
+  }
+
   /// Try cached IPs quickly; returns true if a cached ip was confirmed and
   /// selected.
   Future<bool> _tryCachedIps() async {

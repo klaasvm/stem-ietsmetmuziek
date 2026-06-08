@@ -32,123 +32,130 @@ class LaptopService extends ChangeNotifier {
   static const String _prefsKeyIp = 'laptop_ip';
   static const String _prefsKeyPort = 'laptop_port';
 
+  // De variabele die bijhoudt of we écht verbonden zijn
+  bool _isConnected = false;
+
   String? get laptopIp => _laptopIp;
   int get laptopPort => _laptopPort;
   bool get manuallyConfigured => _manuallyConfigured;
   String get status => _status;
   bool get isConfigured => _laptopIp != null && _laptopIp!.isNotEmpty;
+  bool get isConnected => _isConnected;
 
   Future<void> loadConfig() async {
     try {
       final SharedPreferences prefs = await SharedPreferences.getInstance();
       _laptopIp = prefs.getString(_prefsKeyIp);
       _laptopPort = prefs.getInt(_prefsKeyPort) ?? 5000;
-      _manuallyConfigured = _laptopIp != null;
-      if (_laptopIp != null) {
-        _status = 'Laptop ingesteld op $_laptopIp:$_laptopPort';
+      _manuallyConfigured = _laptopIp != null && _laptopIp!.isNotEmpty;
+      
+      if (_manuallyConfigured) {
+        _status = 'Configuratie geladen: $_laptopIp:$_laptopPort';
+        notifyListeners();
+        // Direct na het inladen ook testen of de verbinding werkt
+        await verifyConnection();
+      } else {
+        _status = 'Geen laptop configuratie gevonden';
+        notifyListeners();
       }
+    } catch (e) {
+      _status = 'Fout bij laden configuratie: $e';
       notifyListeners();
-    } catch (_) {
-      // ignore
     }
   }
 
-  Future<void> setLaptopIp(String ip, {int port = 5000}) async {
-    if (ip.isEmpty) {
-      _laptopIp = null;
-      _manuallyConfigured = false;
-      _status = 'Laptop niet geconfigureerd';
-    } else {
+  Future<void> saveConfig(String ip, int port) async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefsKeyIp, ip);
+      await prefs.setInt(_prefsKeyPort, port);
       _laptopIp = ip;
       _laptopPort = port;
       _manuallyConfigured = true;
-      _status = 'Laptop ingesteld op $ip:$port';
+      _status = 'Configuratie opgeslagen';
+      notifyListeners();
+      // Direct na het opslaan de connectie testen
+      await verifyConnection();
+    } catch (e) {
+      _status = 'Fout bij opslaan configuratie: $e';
+      notifyListeners();
     }
-
-    try {
-      final SharedPreferences prefs = await SharedPreferences.getInstance();
-      if (ip.isEmpty) {
-        await prefs.remove(_prefsKeyIp);
-        await prefs.remove(_prefsKeyPort);
-      } else {
-        await prefs.setString(_prefsKeyIp, ip);
-        await prefs.setInt(_prefsKeyPort, port);
-      }
-    } catch (_) {
-      // ignore
-    }
-
-    notifyListeners();
   }
 
-  bool _isValidIpv4(String value) {
-    final RegExp pattern = RegExp(
-      r'^(25[0-5]|2[0-4]\d|1?\d?\d)\.(25[0-5]|2[0-4]\d|1?\d?\d)\.(25[0-5]|2[0-4]\d|1?\d?\d)\.(25[0-5]|2[0-4]\d|1?\d?\d)$',
-    );
-    return pattern.hasMatch(value.trim());
+  Future<void> updateIp(String ip) async {
+    await saveConfig(ip, _laptopPort);
   }
 
-  Future<bool> testConnection() async {
-    if (_laptopIp == null || _laptopIp!.isEmpty) {
+  // De nieuwe functie die de Python '/health' endpoint controleert
+  Future<bool> verifyConnection() async {
+    if (!isConfigured) {
+      _isConnected = false;
+      _status = 'Laptop niet geconfigureerd';
+      notifyListeners();
       return false;
     }
+
+    _status = 'Verbinding met laptop testen...';
+    notifyListeners();
 
     final HttpClient client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 3);
 
     try {
-      final HttpClientRequest request = await client
-          .getUrl(Uri.parse('http://$_laptopIp:$_laptopPort/health'))
-          .timeout(const Duration(seconds: 4));
-      _setClientHeaders(request);
+      final Uri uri = Uri.parse('http://$_laptopIp:$_laptopPort/health');
+      final HttpClientRequest request = await client.getUrl(uri);
+      
       final HttpClientResponse response = await request.close().timeout(
-        const Duration(seconds: 4),
+        const Duration(seconds: 3),
       );
 
-      if (response.statusCode != 200) {
-        return false;
+      if (response.statusCode == 200) {
+        final String body = await response.transform(utf8.decoder).join();
+        final dynamic decoded = jsonDecode(body);
+        
+        if (decoded is Map && decoded['status'] == 'ok') {
+          _isConnected = true;
+          _status = 'Succesvol verbonden met laptop!';
+          notifyListeners();
+          return true;
+        }
       }
 
-      final String body = await response.transform(utf8.decoder).join();
-      final dynamic decoded = jsonDecode(body);
-      return decoded is Map<String, dynamic> && decoded['status'] == 'ok';
-    } catch (_) {
+      _isConnected = false;
+      _status = 'Laptop reageert met foutcode: ${response.statusCode}';
+      notifyListeners();
+      return false;
+    } catch (e) {
+      _isConnected = false;
+      _status = 'Kan laptop niet bereiken (staat de server aan?)';
+      notifyListeners();
       return false;
     } finally {
       client.close(force: true);
     }
   }
 
-  Future<LaptopUploadResult> uploadMidiFile({
-    required Uint8List data,
-    required String fileName,
-  }) async {
-    if (data.isEmpty) {
-      throw const HttpException('Bestand is leeg.');
+  Future<LaptopUploadResult> uploadMidiToLaptop(
+    Uint8List fileBytes,
+    String fileName,
+  ) async {
+    if (!isConfigured) {
+      throw const HttpException('Laptop IP is niet ingesteld. Ga naar dev mode om in te stellen.');
     }
-
-    if (_laptopIp == null || _laptopIp!.isEmpty) {
-      throw const HttpException('Laptop niet geconfigureerd.');
-    }
-
-    final Uri uri = Uri.parse('http://$_laptopIp:$_laptopPort/upload');
 
     final HttpClient client = HttpClient();
-    client.connectionTimeout = const Duration(seconds: 4);
-
     try {
-      final HttpClientRequest request = await client
-          .postUrl(uri)
-          .timeout(const Duration(seconds: 5));
-      _setClientHeaders(request);
+      final Uri uri = Uri.parse('http://$_laptopIp:$_laptopPort/upload');
+      final HttpClientRequest request = await client.postUrl(uri);
 
-      // Send as multipart form data
-      final String boundary = 'dart-http-boundary-${DateTime.now().millisecondsSinceEpoch}';
-      request.headers.contentType = ContentType.parse('multipart/form-data; boundary=$boundary');
+      final String boundary = '----DartFormBoundary${DateTime.now().millisecondsSinceEpoch}';
+      request.headers.set('Content-Type', 'multipart/form-data; boundary=$boundary');
+      request.headers.set('X-Client-Type', _clientType);
+      request.headers.set('X-Client-Id', _clientId);
 
-      final List<int> formData = _buildMultipartFormData(data, fileName, boundary);
-      request.headers.contentLength = formData.length;
-      request.add(formData);
+      final List<int> bodyBytes = _buildMultipartFormData(fileBytes, fileName, boundary);
+      request.contentLength = bodyBytes.length;
+      request.add(bodyBytes);
 
       final HttpClientResponse response = await request.close().timeout(
         const Duration(seconds: 8),
@@ -180,21 +187,13 @@ class LaptopService extends ChangeNotifier {
     final List<int> result = <int>[];
     const String crlf = '\r\n';
 
-    // Add file part
     result.addAll(utf8.encode('--$boundary$crlf'));
     result.addAll(utf8.encode('Content-Disposition: form-data; name="file"; filename="$fileName"$crlf'));
     result.addAll(utf8.encode('Content-Type: application/octet-stream$crlf$crlf'));
     result.addAll(fileData);
     result.addAll(utf8.encode(crlf));
-
-    // Add boundary end
     result.addAll(utf8.encode('--$boundary--$crlf'));
 
     return result;
-  }
-
-  void _setClientHeaders(HttpClientRequest request) {
-    request.headers.set('X-Client-Type', _clientType);
-    request.headers.set('X-Client-Id', _clientId);
   }
 }

@@ -3,9 +3,9 @@ const int STEP_PINS[5] = {13, 11, 10, 9, 8};
 const int DIR_PIN_1 = 12;
 
 // Arrays om de status en timing per motor bij te houden
-unsigned long halfPeriod[5] = {0, 0, 0, 0, 0}; // Tijd tussen elke HIGH/LOW wissel (bepaalt de frequentie)
-unsigned long lastToggle[5] = {0, 0, 0, 0, 0}; // Laatste keer dat de pin is omgeschakeld
-bool pinState[5] = {LOW, LOW, LOW, LOW, LOW};  // Huidige status van de pin
+unsigned long halfPeriod[5] = {0, 0, 0, 0, 0}; 
+unsigned long lastToggle[5] = {0, 0, 0, 0, 0}; 
+bool pinState[5] = {LOW, LOW, LOW, LOW, LOW};  
 
 // Variabelen voor de 'delay' (non-blocking)
 unsigned long waitStartTime = 0;
@@ -20,8 +20,10 @@ boolean newData = false;
 void setup() {
     Serial.begin(115200); 
     
+    // Zet alle step-pins als output EN zorg dat ze uit staan
     for (int i = 0; i < 5; i++) {
         pinMode(STEP_PINS[i], OUTPUT);
+        digitalWrite(STEP_PINS[i], LOW);
     }
     
     pinMode(DIR_PIN_1, OUTPUT);
@@ -32,35 +34,34 @@ void loop() {
     unsigned long currentMicros = micros();
 
     // ---------------------------------------------------------
-    // 1. MOTOREN AANSTUREN (Software PWM)
-    // Dit stukje draait continu en mag nooit geblokkeerd worden
+    // 1. MOTOREN AANSTUREN (Software PWM - Blokkeert nooit!)
     // ---------------------------------------------------------
     for (int i = 0; i < 5; i++) {
         if (halfPeriod[i] > 0) {
+            // Check of het tijd is om de pin om te klappen
             if (currentMicros - lastToggle[i] >= halfPeriod[i]) {
-                lastToggle[i] += halfPeriod[i]; // Behoud perfecte timing
-                pinState[i] = !pinState[i];     // Wissel HIGH naar LOW of andersom
+                lastToggle[i] += halfPeriod[i]; 
+                pinState[i] = !pinState[i];     
                 digitalWrite(STEP_PINS[i], pinState[i]);
             }
         }
     }
 
     // ---------------------------------------------------------
-    // 2. TIMING / PAUZES BEHEREN (Vervanger voor delay)
+    // 2. TIMING / PAUZES BEHEREN
     // ---------------------------------------------------------
     if (waitingForTime) {
-        // Controleer of de gewenste wachttijd (duration) verstreken is
+        // Zodra de tijd verstreken is, sturen we "OK" terug naar de laptop
         if (millis() - waitStartTime >= waitDuration) {
             waitingForTime = false;
-            Serial.println("OK"); // Geef laptop het sein voor de volgende noot
+            Serial.println("OK"); 
         }
     } 
     // ---------------------------------------------------------
-    // 3. NIEUWE DATA INLEZEN (Als we niet aan het wachten zijn)
+    // 3. NIEUWE DATA INLEZEN (Alleen als we niet wachten op een noot)
     // ---------------------------------------------------------
     else {
-        recvWithEndMarker(); // Lees Serial in zonder de loop te pauzeren
-
+        recvWithEndMarker(); 
         if (newData) {
             parseData();
             newData = false;
@@ -68,7 +69,7 @@ void loop() {
     }
 }
 
-// Functie om data karakter voor karakter te lezen zonder de code te pauzeren
+// Functie om data veilig karakter voor karakter te lezen
 void recvWithEndMarker() {
     static byte ndx = 0;
     char endMarker = '\n';
@@ -78,11 +79,11 @@ void recvWithEndMarker() {
         rc = Serial.read();
 
         if (rc != endMarker) {
-            if (rc != '\r') { // Negeer carriage returns
+            if (rc != '\r') { 
                 receivedChars[ndx] = rc;
                 ndx++;
                 if (ndx >= numChars) {
-                    ndx = numChars - 1;
+                    ndx = numChars - 1; // Voorkom buffer overflow!
                 }
             }
         }
@@ -94,9 +95,9 @@ void recvWithEndMarker() {
     }
 }
 
-// Functie om "0,440,240" uit elkaar te halen
+// Functie om de format "motor,freq,duration" uit elkaar te halen
 void parseData() {
-    char * strtokIndx; // Gebruikt voor het splitsen van de string
+    char * strtokIndx; 
 
     // 1e waarde: Motor ID
     strtokIndx = strtok(receivedChars, ",");
@@ -113,15 +114,14 @@ void parseData() {
     if (strtokIndx == NULL) return;
     long duration = atol(strtokIndx);
 
-    // Pas de juiste motor aan
+    // Pas de juiste motor aan (0 t/m 4)
     if (motor >= 0 && motor < 5) {
         if (freq > 0) {
-            // Bereken de tijd per 'halve golf' in microseconden
             halfPeriod[motor] = 1000000UL / (2 * freq);
-            lastToggle[motor] = micros(); // Reset de timer voor deze specifieke motor
+            lastToggle[motor] = micros(); 
         } else {
-            halfPeriod[motor] = 0; // Frequentie 0 = motor uit
-            digitalWrite(STEP_PINS[motor], LOW);
+            halfPeriod[motor] = 0; 
+            digitalWrite(STEP_PINS[motor], LOW); // Zorg dat coil niet onder stroom blijft
         }
     }
 
@@ -131,8 +131,7 @@ void parseData() {
         waitDuration = duration;
         waitingForTime = true;
     } else {
-        // Als duration 0 is, betekent dit dat de laptop nóg een actie op DIT exacte 
-        // moment wil uitvoeren (bijv. voor akkoorden). We sturen direct "OK" terug.
+        // Bij 0 milliseconden direct een OK sturen (perfect voor akkoorden)
         Serial.println("OK");
     }
 }
